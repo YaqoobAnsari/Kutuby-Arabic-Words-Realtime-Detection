@@ -1,0 +1,23 @@
+# Core dependencies
+streamlit>=1.28.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Audio processing
+librosa>=0.10.0
+soundfile>=0.12.0
+PyAudio>=0.2.13
+pydub>=0.25.1
+
+# Whisper AI for speech recognition
+openai-whisper>=20231117
+
+# Text analysis and similarity
+python-Levenshtein>=0.21.0
+
+# Visualization
+plotly>=5.17.0
+matplotlib>=3.7.0
+
+# System utilities
+ffmpeg-python>=0.2.0
