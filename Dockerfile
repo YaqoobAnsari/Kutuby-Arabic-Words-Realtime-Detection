@@ -1,20 +1,29 @@
-FROM python:3.13.5-slim
+FROM python:3.10-slim
 
 WORKDIR /app
 
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
+    libsndfile1 \
+    ffmpeg \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-COPY src/ ./src/
+# Set matplotlib cache directory
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
-RUN pip3 install -r requirements.txt
+# Copy and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-EXPOSE 8501
+# Copy application code
+COPY app.py .
+COPY core/ ./core/
 
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
+# Expose Streamlit port for HuggingFace Spaces
+EXPOSE 7860
 
-ENTRYPOINT ["streamlit", "run", "src/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Run Streamlit
+CMD ["streamlit", "run", "app.py", "--server.port=7860", "--server.address=0.0.0.0"]

@@ -1,7 +1,6 @@
 """
 Arabic Word Recognition System
 Production-level application for real-time Arabic speech recognition
-Optimized for Hugging Face Spaces deployment (no PyAudio dependency)
 
 Author: Yaqoob Ansari
 Version: 2.0.0
@@ -11,11 +10,12 @@ Model: Wav2Vec2-Large-XLSR-53-Arabic
 import streamlit as st
 import tempfile
 import os
-import librosa
+import time
 from pathlib import Path
 
 # Import core modules
 from core.model_loader import ModelLoader
+from core.audio_recorder import AudioRecorder
 from core.transcriber import AudioTranscriber
 
 
@@ -25,6 +25,7 @@ class ArabicWordRecognitionApp:
     def __init__(self):
         """Initialize application components"""
         self.model_loader = ModelLoader()
+        self.recorder = AudioRecorder()
         self.transcriber = None
         self.setup_page_config()
 
@@ -80,42 +81,57 @@ class ArabicWordRecognitionApp:
             - ⚠️ Minor diacritical mark variations expected
             """)
 
-    def render_upload_interface(self):
-        """Render audio upload interface"""
-        st.subheader("🎤 Upload Your Recording")
+    def render_recording_interface(self):
+        """Render recording controls"""
+        col1, col2 = st.columns([1, 1])
 
-        audio_file = st.file_uploader(
-            "Choose an audio file (WAV, MP3, M4A, FLAC, OGG)",
-            type=['wav', 'mp3', 'm4a', 'flac', 'ogg'],
-            help="Record yourself saying an Arabic word, then upload the file here"
-        )
+        with col1:
+            st.subheader("🎛️ Settings")
+            duration = st.slider(
+                "Recording Duration (seconds)",
+                min_value=2,
+                max_value=5,
+                value=3,
+                help="Adjust recording length for your speech"
+            )
+            st.info(f"📝 Will record for {duration} seconds")
 
-        st.info("💡 **Tip**: Use your phone or computer to record yourself speaking an Arabic word, then upload it here!")
+        with col2:
+            st.subheader("🔴 Record")
+            record_button = st.button(
+                "🎤 Start Recording",
+                type="primary",
+                use_container_width=True
+            )
 
-        return audio_file
+        return duration, record_button
 
-    def process_audio_file(self, audio_file):
-        """Process uploaded audio file"""
-        try:
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(audio_file.name).suffix) as tmp:
-                tmp.write(audio_file.read())
-                temp_path = tmp.name
+    def handle_recording(self, duration: int):
+        """Handle the recording process"""
+        # Countdown
+        countdown_placeholder = st.empty()
+        for i in range(3, 0, -1):
+            countdown_placeholder.warning(f"🔴 Recording starts in {i}...")
+            time.sleep(1)
+        countdown_placeholder.success("🎤 Recording NOW!")
 
-            # Load audio
-            audio_data, sample_rate = librosa.load(temp_path, sr=16000)
+        # Record audio
+        with st.spinner(f"📡 Recording for {duration} seconds..."):
+            success = self.recorder.record_audio(duration)
 
-            st.audio(audio_file, format=f"audio/{Path(audio_file.name).suffix[1:]}")
-
-            # Display audio stats
-            duration = len(audio_data) / sample_rate
-            st.info(f"📊 **Audio**: Duration: {duration:.2f}s | Sample Rate: 16kHz")
-
-            return temp_path
-
-        except Exception as e:
-            st.error(f"❌ Error loading audio: {str(e)}")
+        if not success:
+            st.error("❌ Recording failed. Check microphone permissions.")
             return None
+
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            temp_path = tmp.name
+
+        if not self.recorder.save_recording(temp_path):
+            st.error("❌ Failed to save recording.")
+            return None
+
+        return temp_path
 
     def display_results(self, transcription: str):
         """Display transcription results"""
@@ -146,18 +162,18 @@ class ArabicWordRecognitionApp:
         with col1:
             st.markdown("""
             **Quick Start:**
-            1. 🎙️ Record yourself saying an Arabic word
-            2. 📁 Upload the audio file above
-            3. 🤖 Wait for AI analysis
+            1. 🎛️ Set recording duration (2-5 seconds)
+            2. 🎤 Click "Start Recording"
+            3. 🗣️ Speak your Arabic word clearly
             4. 📝 View the recognized text
             """)
 
         with col2:
             st.markdown("""
             **Tips for Best Results:**
-            - 🔇 Record in a quiet environment
+            - 🔇 Use a quiet environment
             - 🎙️ Speak clearly at normal pace
-            - 📱 Use your phone's voice recorder
+            - 📱 Keep microphone close
             - 🕌 Try Quranic vocabulary for best accuracy
             """)
 
@@ -165,6 +181,7 @@ class ArabicWordRecognitionApp:
         """Render technical information"""
         with st.expander("🔧 Technical Information"):
             model_info = self.model_loader.get_model_info()
+            audio_config = self.recorder.get_audio_config()
 
             col1, col2 = st.columns(2)
 
@@ -175,9 +192,8 @@ class ArabicWordRecognitionApp:
 
             with col2:
                 st.markdown("**Audio Configuration:**")
-                st.text("• Sample Rate: 16000 Hz")
-                st.text("• Channels: Mono")
-                st.text("• Format: WAV, MP3, M4A, FLAC, OGG")
+                for key, value in audio_config.items():
+                    st.text(f"• {key.replace('_', ' ').title()}: {value}")
 
             st.markdown("""
             **Performance Metrics (Quranic Words):**
@@ -194,14 +210,17 @@ class ArabicWordRecognitionApp:
         self.load_models()
         self.render_performance_stats()
 
-        # Upload interface
-        audio_file = self.render_upload_interface()
+        # Recording interface
+        duration, record_button = self.render_recording_interface()
 
-        # Process audio
-        if audio_file is not None:
-            temp_path = self.process_audio_file(audio_file)
+        # Handle recording
+        if record_button:
+            temp_path = self.handle_recording(duration)
 
             if temp_path:
+                # Display audio player
+                st.audio(temp_path, format="audio/wav")
+
                 # Transcribe
                 with st.spinner("🤖 Analyzing speech with AI..."):
                     transcription = self.transcriber.transcribe(temp_path)
@@ -211,6 +230,7 @@ class ArabicWordRecognitionApp:
 
                 # Cleanup
                 try:
+                    time.sleep(0.1)
                     os.unlink(temp_path)
                 except:
                     pass
