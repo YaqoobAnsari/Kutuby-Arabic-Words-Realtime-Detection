@@ -1,3 +1,19 @@
-altair
-pandas
-streamlit
+# Arabic Word Recognition System - Dependencies
+# Install: pip install -r requirements.txt
+
+# Core Web Framework
+streamlit>=1.28.0
+
+# Audio Processing
+PyAudio>=0.2.13
+librosa>=0.10.0
+soundfile>=0.12.1
+
+# Machine Learning - Wav2Vec2
+torch>=2.0.0
+torchaudio>=2.0.0
+transformers>=4.30.0
+sentencepiece>=0.1.99
+
+# Scientific Computing
+numpy>=1.24.0
