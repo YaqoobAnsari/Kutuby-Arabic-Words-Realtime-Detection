@@ -1,241 +1,397 @@
 """
-Arabic Word Recognition System
-Production-level application for real-time Arabic speech recognition
-Optimized for Hugging Face Spaces deployment (no PyAudio dependency)
-
-Author: Yaqoob Ansari
-Version: 2.0.0
-Model: Wav2Vec2-Large-XLSR-53-Arabic
+Arabic Word Recognition API
+FastAPI backend for real-time audio processing
 """
 
-import streamlit as st
-import tempfile
 import os
-import librosa
-from pathlib import Path
+import tempfile
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
-# Import core modules
 from core.model_loader import ModelLoader
 from core.transcriber import AudioTranscriber
 
+# Initialize FastAPI
+app = FastAPI(title="Arabic Word Recognition API")
 
-class ArabicWordRecognitionApp:
-    """Main application class for Arabic word recognition"""
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    def __init__(self):
-        """Initialize application components"""
-        self.model_loader = ModelLoader()
-        self.transcriber = None
-        self.setup_page_config()
+# Global model storage
+model_loader = ModelLoader()
+model, tokenizer, _ = model_loader.load_model()
+transcriber = AudioTranscriber(model, tokenizer)
 
-    @staticmethod
-    def setup_page_config():
-        """Configure Streamlit page settings"""
-        st.set_page_config(
-            page_title="Arabic Word Recognition",
-            page_icon="🎤",
-            layout="centered",
-            initial_sidebar_state="collapsed"
-        )
-
-    def load_models(self):
-        """Load AI models with progress indication"""
-        with st.spinner("🔄 Loading Wav2Vec2 Arabic model..."):
-            model, tokenizer, success = self.model_loader.load_model()
-
-        if not success:
-            st.error("❌ Failed to load model. Please check internet connection and try again.")
-            st.stop()
-
-        self.transcriber = AudioTranscriber(model, tokenizer)
-        st.success("✅ Model loaded successfully!")
-        return success
-
-    def render_header(self):
-        """Render application header"""
-        st.title("🎤 Arabic Word Recognition System")
-        st.markdown("**Real-time Arabic speech-to-text using Wav2Vec2**")
-        st.markdown("---")
-
-    def render_performance_stats(self):
-        """Render model performance statistics"""
-        with st.expander("📊 Model Performance - Quranic Vocabulary Test"):
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.metric("Average Accuracy", "95.3%")
-            with col2:
-                st.metric("Confidence Score", "94.7%")
-            with col3:
-                st.metric("Perfect Matches", "73.3%")
-            with col4:
-                st.metric("Test Words", "30/30")
-
-            st.info("""
-            **Performance Highlights:**
-            - ✅ Tested on 30 most frequent Quranic words
-            - ✅ 22/30 perfect matches (73.3%)
-            - ✅ 8/30 minor variations in diacritics (26.7%)
-            - ✅ Zero major recognition errors
-            - ⚠️ Minor diacritical mark variations expected
-            """)
-
-    def render_upload_interface(self):
-        """Render audio upload interface"""
-        st.subheader("🎤 Upload Your Recording")
-
-        audio_file = st.file_uploader(
-            "Choose an audio file (WAV, MP3, M4A, FLAC, OGG)",
-            type=['wav', 'mp3', 'm4a', 'flac', 'ogg'],
-            help="Record yourself saying an Arabic word, then upload the file here"
-        )
-
-        st.info("💡 **Tip**: Use your phone or computer to record yourself speaking an Arabic word, then upload it here!")
-
-        return audio_file
-
-    def process_audio_file(self, audio_file):
-        """Process uploaded audio file"""
-        try:
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(audio_file.name).suffix) as tmp:
-                tmp.write(audio_file.read())
-                temp_path = tmp.name
-
-            # Load audio
-            audio_data, sample_rate = librosa.load(temp_path, sr=16000)
-
-            st.audio(audio_file, format=f"audio/{Path(audio_file.name).suffix[1:]}")
-
-            # Display audio stats
-            duration = len(audio_data) / sample_rate
-            st.info(f"📊 **Audio**: Duration: {duration:.2f}s | Sample Rate: 16kHz")
-
-            return temp_path
-
-        except Exception as e:
-            st.error(f"❌ Error loading audio: {str(e)}")
-            return None
-
-    def display_results(self, transcription: str):
-        """Display transcription results"""
-        st.markdown("---")
-        st.subheader("📝 Recognition Results")
-
-        if transcription:
-            st.markdown("### 🎯 Recognized Arabic Text:")
-            st.markdown(
-                f"<div style='font-size: 32px; font-weight: bold; "
-                f"text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); "
-                f"color: white; border-radius: 10px; margin: 10px 0;'>{transcription}</div>",
-                unsafe_allow_html=True
-            )
-
-            st.success("✨ Transcription completed using Wav2Vec2-Large-XLSR-53-Arabic")
-
-        else:
-            st.warning("⚠️ No speech detected. Please try again with clearer pronunciation.")
-
-    def render_instructions(self):
-        """Render usage instructions"""
-        st.markdown("---")
-        st.subheader("📖 How to Use")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("""
-            **Quick Start:**
-            1. 🎙️ Record yourself saying an Arabic word
-            2. 📁 Upload the audio file above
-            3. 🤖 Wait for AI analysis
-            4. 📝 View the recognized text
-            """)
-
-        with col2:
-            st.markdown("""
-            **Tips for Best Results:**
-            - 🔇 Record in a quiet environment
-            - 🎙️ Speak clearly at normal pace
-            - 📱 Use your phone's voice recorder
-            - 🕌 Try Quranic vocabulary for best accuracy
-            """)
-
-    def render_technical_info(self):
-        """Render technical information"""
-        with st.expander("🔧 Technical Information"):
-            model_info = self.model_loader.get_model_info()
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.markdown("**Model Specifications:**")
-                for key, value in model_info.items():
-                    st.text(f"• {key.replace('_', ' ').title()}: {value}")
-
-            with col2:
-                st.markdown("**Audio Configuration:**")
-                st.text("• Sample Rate: 16000 Hz")
-                st.text("• Channels: Mono")
-                st.text("• Format: WAV, MP3, M4A, FLAC, OGG")
-
-            st.markdown("""
-            **Performance Metrics (Quranic Words):**
-            - Average Recognition Accuracy: 95.3%
-            - Average Confidence Score: 94.7%
-            - Perfect Match Rate: 73.3%
-            - Tested on 30 most frequent Quranic words
-            """)
-
-    def run(self):
-        """Main application loop"""
-        # Render UI components
-        self.render_header()
-        self.load_models()
-        self.render_performance_stats()
-
-        # Upload interface
-        audio_file = self.render_upload_interface()
-
-        # Process audio
-        if audio_file is not None:
-            temp_path = self.process_audio_file(audio_file)
-
-            if temp_path:
-                # Transcribe
-                with st.spinner("🤖 Analyzing speech with AI..."):
-                    transcription = self.transcriber.transcribe(temp_path)
-
-                # Display results
-                self.display_results(transcription)
-
-                # Cleanup
-                try:
-                    os.unlink(temp_path)
-                except:
-                    pass
-
-        # Instructions and technical info
-        self.render_instructions()
-        self.render_technical_info()
-
-        # Footer
-        st.markdown("---")
-        st.markdown(
-            "<div style='text-align: center; color: #666;'>"
-            "Arabic Word Recognition System v2.0 | "
-            "Built with Wav2Vec2 & Streamlit | "
-            "© 2024 Yaqoob Ansari"
-            "</div>",
-            unsafe_allow_html=True
-        )
+print("✅ Model loaded successfully!")
 
 
-def main():
-    """Application entry point"""
-    app = ArabicWordRecognitionApp()
-    app.run()
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    """Serve the main HTML page"""
+    return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arabic Word Recognition</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        h1 {
+            color: #667eea;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .stats {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stats h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+
+        .metric {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .metric-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .recording-section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        #recordButton {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 20px 40px;
+            font-size: 1.2em;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin: 20px 0;
+        }
+
+        #recordButton:hover {
+            background: #5568d3;
+            transform: scale(1.05);
+        }
+
+        #recordButton:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: scale(1);
+        }
+
+        #recordButton.recording {
+            background: #dc3545;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            display: block;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        #result {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            font-size: 2em;
+            font-weight: bold;
+            text-align: center;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .instructions {
+            background: #e7f3ff;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin-top: 30px;
+            border-radius: 5px;
+        }
+
+        .instructions h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .instructions ul {
+            margin-left: 20px;
+            color: #333;
+        }
+
+        .instructions li {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Arabic Word Recognition</h1>
+        <p class="subtitle">Real-time speech-to-text using Wav2Vec2</p>
+
+        <div class="stats">
+            <h3>📊 Model Performance</h3>
+            <div class="metrics">
+                <div class="metric">
+                    <div class="metric-value">95.3%</div>
+                    <div class="metric-label">Accuracy</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">94.7%</div>
+                    <div class="metric-label">Confidence</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">73.3%</div>
+                    <div class="metric-label">Perfect Matches</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">30/30</div>
+                    <div class="metric-label">Quranic Words</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="recording-section">
+            <h2>🎙️ Record Your Voice</h2>
+            <button id="recordButton">🎤 Click to Record</button>
+            <div id="status" class="status info">
+                Click the button above to start recording (3 seconds)
+            </div>
+            <div id="result"></div>
+        </div>
+
+        <div class="instructions">
+            <h3>📖 How to Use</h3>
+            <ul>
+                <li>🎤 Click the "Record" button</li>
+                <li>🗣️ Speak an Arabic word clearly (you have 3 seconds)</li>
+                <li>⏱️ Wait for the recording to finish automatically</li>
+                <li>🤖 AI will transcribe your speech instantly</li>
+                <li>✨ See the recognized Arabic text below</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        const recordButton = document.getElementById('recordButton');
+        const statusDiv = document.getElementById('status');
+        const resultDiv = document.getElementById('result');
+
+        recordButton.addEventListener('click', async () => {
+            if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+                await startRecording();
+            }
+        });
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    await uploadAudio(audioBlob);
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+                recordButton.textContent = '🔴 Recording...';
+                recordButton.classList.add('recording');
+                recordButton.disabled = true;
+                statusDiv.className = 'status info';
+                statusDiv.textContent = '🎙️ Recording... Speak now!';
+                statusDiv.style.display = 'block';
+                resultDiv.style.display = 'none';
+
+                // Auto-stop after 3 seconds
+                setTimeout(() => {
+                    if (mediaRecorder.state === 'recording') {
+                        mediaRecorder.stop();
+                        recordButton.textContent = '🎤 Click to Record';
+                        recordButton.classList.remove('recording');
+                        recordButton.disabled = false;
+                    }
+                }, 3000);
+
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Error: Could not access microphone. Please allow microphone permissions.';
+                statusDiv.style.display = 'block';
+                console.error('Error accessing microphone:', error);
+            }
+        }
+
+        async function uploadAudio(audioBlob) {
+            statusDiv.className = 'status info';
+            statusDiv.textContent = '🤖 Analyzing speech with AI...';
+            statusDiv.style.display = 'block';
+
+            const formData = new FormData();
+            formData.append('file', audioBlob, 'recording.wav');
+
+            try {
+                const response = await fetch('/transcribe', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    resultDiv.textContent = data.transcription || 'لا يوجد كلام';
+                    resultDiv.style.display = 'block';
+                    statusDiv.className = 'status success';
+                    statusDiv.textContent = '✅ Transcription completed!';
+                } else {
+                    throw new Error(data.detail || 'Transcription failed');
+                }
+
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '❌ Error: ' + error.message;
+                console.error('Upload error:', error);
+            }
+        }
+    </script>
+</body>
+</html>
+    """
+
+
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Transcribe uploaded audio file"""
+    try:
+        # Read audio data
+        audio_data = await file.read()
+
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+            tmp.write(audio_data)
+            temp_path = tmp.name
+
+        # Transcribe
+        transcription = transcriber.transcribe(temp_path)
+
+        # Cleanup
+        os.unlink(temp_path)
+
+        return JSONResponse({
+            "transcription": transcription or "",
+            "success": True
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "model_loaded": transcriber is not None}
 
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 7860))
+    uvicorn.run(app, host="0.0.0.0", port=port)

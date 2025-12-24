@@ -22,8 +22,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY app.py .
 COPY core/ ./core/
 
-# Expose Streamlit port for HuggingFace Spaces
+# Expose FastAPI port for HuggingFace Spaces
 EXPOSE 7860
 
-# Run Streamlit
-CMD ["streamlit", "run", "app.py", "--server.port=7860", "--server.address=0.0.0.0"]
+# Run FastAPI with uvicorn
+CMD ["python", "app.py"]
