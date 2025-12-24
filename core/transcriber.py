@@ -5,7 +5,6 @@ Handles speech-to-text conversion using Wav2Vec2
 
 import torch
 import librosa
-import streamlit as st
 from typing import Optional
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Tokenizer
 
@@ -40,7 +39,7 @@ class AudioTranscriber:
             speech, _ = librosa.load(audio_file, sr=self.sample_rate)
 
             if len(speech) == 0:
-                st.warning("⚠️ Empty audio file")
+                print("⚠️ Empty audio file")
                 return None
 
             # Normalize audio amplitude
@@ -67,7 +66,7 @@ class AudioTranscriber:
             return transcription.strip()
 
         except Exception as e:
-            st.error(f"❌ Transcription error: {str(e)}")
+            print(f"❌ Transcription error: {str(e)}")
             return None
 
     def get_confidence_score(self, logits: torch.Tensor) -> float:
