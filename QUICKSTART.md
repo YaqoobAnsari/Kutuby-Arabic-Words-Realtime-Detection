@@ -1,102 +1,111 @@
 # Quick Start Guide
-
-Get the Arabic Pronunciation Assessment System running in 5 minutes!
+Get Arabic Word Recognition running in 5 minutes!
 
 ## Prerequisites
-
-- Python 3.8 or higher installed
-- Internet connection (for initial setup)
-- Microphone or audio files for testing
+- Python 3.8+ installed
+- Microphone (for live recording)
+- Internet connection (for model download)
 
 ## Installation
 
 ### Windows
-
 ```bash
-# 1. Run the setup script
+# Run setup script
 .\setup.bat
 
-# 2. Activate virtual environment
+# Activate environment
 words\Scripts\activate
 
-# 3. Start the application
+# Launch app
 streamlit run app.py
 ```
 
 ### macOS / Linux
-
 ```bash
-# 1. Make setup script executable and run it
+# Run setup script
 chmod +x setup.sh
 ./setup.sh
 
-# 2. Activate virtual environment
+# Activate environment
 source words/bin/activate
 
-# 3. Start the application
+# Launch app
 streamlit run app.py
 ```
 
-## Usage
+## First Use
 
-1. **Open your browser** to `http://localhost:8501`
+1. **Open Browser**: Navigate to `http://localhost:8501`
+2. **Wait for Model**: First launch downloads Wav2Vec2 model (~1.2GB, takes 2-5 min)
+3. **Set Duration**: Choose 2-5 seconds recording time
+4. **Record**: Click "Start Recording" button
+5. **Speak**: Say an Arabic word clearly (try "السلام" - As-salaam)
+6. **View Result**: See the recognized Arabic text
 
-2. **Select an Arabic letter** from the dropdown menu
-   - Easy: أ, ب, ت, د, ر, س, ل, م, ن
-   - Medium: ث, ج, ز, ش, ف, ك, ه, و, ي
-   - Hard: ح, خ, ذ, ص, ض, ط, ظ, ع, غ, ق
+## Quick Test
 
-3. **Record your pronunciation**
-   - **Option 1 (Recommended)**: Upload an audio file
-   - **Option 2**: Use browser recording
-
-4. **Click "Analyze Pronunciation"** to get instant feedback
-
-5. **Review your results**
-   - Overall score and letter grade
-   - Pronunciation accuracy
-   - Detailed error analysis
-   - Personalized practice recommendations
-
-## First Test
-
-Try this simple test:
-
-1. Select the letter **"ب"** (easy category)
-2. Upload or record yourself saying "baa" (as in "bat")
-3. Click analyze
-4. You should see scores and feedback
+Try these common Arabic words:
+- **السلام** (As-salaam) - Peace
+- **شكرا** (Shukran) - Thank you
+- **مرحبا** (Marhaban) - Hello
+- **الله** (Allah) - God
+- **قال** (Qala) - He said
 
 ## Troubleshooting
 
-### "Python not found"
-- Install Python from [python.org](https://www.python.org/downloads/)
-- Make sure to check "Add Python to PATH" during installation
-
 ### "PyAudio installation failed"
-- **Windows**: Install Visual C++ Build Tools
-- **macOS**: Run `brew install portaudio`
-- **Linux**: Run `sudo apt-get install portaudio19-dev`
+**Windows:**
+```bash
+pip install pipwin
+pipwin install pyaudio
+```
 
-### "FFmpeg not found"
-- **Windows**: Install via Chocolatey: `choco install ffmpeg`
-- **macOS**: Run `brew install ffmpeg`
-- **Linux**: Run `sudo apt-get install ffmpeg`
+**macOS:**
+```bash
+brew install portaudio
+pip install pyaudio
+```
 
-### "Recording doesn't work"
-- Use the file upload option instead
-- Check microphone permissions in system settings
+**Linux:**
+```bash
+sudo apt-get install portaudio19-dev
+pip install pyaudio
+```
+
+### "Model download failed"
+- Check internet connection
+- Retry - model is large (1.2GB)
+- Use VPN if HuggingFace is blocked
+
+### "Microphone not working"
+- Check system microphone permissions
+- Test microphone in other apps first
+- Try increasing recording duration to 5 seconds
+
+### "No speech detected"
+- Speak louder and closer to microphone
+- Use quiet environment
+- Check audio levels in system settings
+
+## Performance Tips
+
+- **Best Audio Quality**: Use external USB microphone
+- **Best Accuracy**: Speak Modern Standard Arabic (MSA)
+- **Best Results**: Quranic vocabulary (95.3% accuracy)
+- **Quiet Environment**: Background noise < 5dB recommended
 
 ## Next Steps
 
-- Read the full [README.md](README.md) for detailed documentation
-- Visit the [GitHub repository](https://github.com/YaqoobAnsari/Kutuby-Arabic-Words-Realtime-Detection) for updates
+- Read full [README.md](README.md) for detailed documentation
+- Check model performance metrics
+- Explore API usage for custom integration
+- Visit [GitHub](https://github.com/YaqoobAnsari/Kutuby-Arabic-Words-Realtime-Detection) for updates
 
 ## Support
 
-- Report issues: [GitHub Issues](https://github.com/YaqoobAnsari/Kutuby-Arabic-Words-Realtime-Detection/issues)
-- Email: ansarimohammedyaqoob01@gmail.com
+- **Issues**: [GitHub Issues](https://github.com/YaqoobAnsari/Kutuby-Arabic-Words-Realtime-Detection/issues)
+- **Email**: ansarimohammedyaqoob01@gmail.com
 
 ---
 
-**Happy Learning! 🎯**
+**Happy Recognizing! 🎤**

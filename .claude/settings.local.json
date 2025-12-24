@@ -5,7 +5,16 @@
       "Bash(python -m py_compile:*)",
       "Bash(git init:*)",
       "Bash(git config:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git remote add:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(python -m venv:*)",
+      "Bash(wordsScriptsactivate)",
+      "Bash(pip install:*)",
+      "Bash(./words/Scripts/pip install:*)",
+      "Bash(./words/Scripts/python.exe -m pip install:*)"
     ]
   }
 }
