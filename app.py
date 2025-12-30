@@ -5,7 +5,7 @@ FastAPI backend for real-time audio processing
 
 import os
 import tempfile
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -390,6 +390,100 @@ async def transcribe_audio(file: UploadFile = File(...)):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "model_loaded": transcriber is not None}
+
+
+@app.post("/verify_word", response_class=JSONResponse)
+async def verify_word(
+    audio: UploadFile = File(...),
+    target_word: str = Form(...),
+    threshold: float = Form(0.6)
+):
+    """
+    Endpoint for verifying if an audio file matches a target Arabic word.
+
+    Parameters:
+    - audio: WAV file (1-3 seconds duration)
+    - target_word: The expected Arabic word (e.g., "الله", "من", "في")
+    - threshold: Confidence threshold (default 0.6 = 60%)
+
+    Returns:
+    - result: True if predicted word matches target and confidence >= threshold
+    - predicted_word: The transcribed word
+    - confidence: The confidence score (0-1)
+    - message: Human-readable explanation
+
+    Example usage with curl:
+    curl -X POST "http://localhost:7860/verify_word" \
+         -F "audio=@recording.wav" \
+         -F "target_word=الله" \
+         -F "threshold=0.6"
+    """
+    try:
+        # Read audio data
+        audio_data = await audio.read()
+
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+            tmp.write(audio_data)
+            temp_path = tmp.name
+
+        # Transcribe with confidence
+        result = transcriber.transcribe_with_confidence(temp_path)
+
+        # Cleanup
+        os.unlink(temp_path)
+
+        # Check for errors
+        if result["error"]:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": f"Transcription failed: {result['error']}",
+                    "result": False
+                }
+            )
+
+        predicted_word = result["transcription"]
+        confidence = result["confidence"]
+
+        # Normalize both words for comparison (remove extra spaces, diacritics comparison)
+        target_normalized = target_word.strip()
+        predicted_normalized = predicted_word.strip() if predicted_word else ""
+
+        # Check if words match (exact or close match)
+        words_match = (
+            predicted_normalized == target_normalized or
+            predicted_normalized.replace(" ", "") == target_normalized.replace(" ", "")
+        )
+
+        # Verify if target word matches prediction AND confidence meets threshold
+        verification_result = words_match and confidence >= threshold
+
+        # Generate message
+        if verification_result:
+            message = f"✓ Success: '{target_word}' detected with {confidence*100:.2f}% confidence (threshold: {threshold*100:.0f}%)"
+        elif not words_match:
+            message = f"✗ Failed: Expected '{target_word}' but got '{predicted_word}' ({confidence*100:.2f}% confidence)"
+        else:
+            message = f"✗ Failed: Word matches but confidence {confidence*100:.2f}% is below threshold {threshold*100:.0f}%"
+
+        return JSONResponse({
+            "result": verification_result,
+            "target_word": target_word,
+            "predicted_word": predicted_word,
+            "confidence": float(confidence),
+            "threshold": float(threshold),
+            "message": message
+        })
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "result": False
+            }
+        )
 
 
 if __name__ == "__main__":
