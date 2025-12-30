@@ -392,6 +392,26 @@ async def health_check():
     return {"status": "healthy", "model_loaded": transcriber is not None}
 
 
+@app.get("/api/info")
+async def api_info():
+    """Return available API endpoints"""
+    return {
+        "endpoints": {
+            "GET /": "Web UI for real-time word recognition",
+            "POST /transcribe": "Transcribe audio from web UI (file upload)",
+            "POST /verify_word": "Verify if audio matches target word (Postman/API)",
+            "GET /health": "Health check",
+            "GET /api/info": "This endpoint - API information"
+        },
+        "verify_word_parameters": {
+            "audio": "Audio file (WAV format, multipart/form-data)",
+            "target_word": "Expected Arabic word (form field)",
+            "threshold": "Confidence threshold 0-1 (form field, default: 0.6)"
+        },
+        "example_curl": "curl -X POST '/verify_word' -F 'audio=@file.wav' -F 'target_word=الله' -F 'threshold=0.6'"
+    }
+
+
 @app.post("/verify_word", response_class=JSONResponse)
 async def verify_word(
     audio: UploadFile = File(...),
