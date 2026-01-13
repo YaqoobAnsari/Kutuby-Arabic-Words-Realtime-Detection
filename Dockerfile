@@ -16,12 +16,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose Streamlit port
+# Expose FastAPI port
 EXPOSE 7860
 
-# Set environment variables for Streamlit
-ENV STREAMLIT_SERVER_PORT=7860
-ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+# Set environment variables
+ENV PORT=7860
+ENV HOST=0.0.0.0
 
-# Run the application
-CMD ["streamlit", "run", "app.py", "--server.port=7860", "--server.address=0.0.0.0"]
+# Run FastAPI application
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]

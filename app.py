@@ -1,261 +1,278 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Arabic Word Recognition System
-Production-level application for real-time Arabic speech recognition
-
-Author: Yaqoob Ansari
-Version: 2.0.0
-Model: Wav2Vec2-Large-XLSR-53-Arabic
+FastAPI entry point for Hugging Face Spaces
+Arabic Word Recognition API - FastAPI Backend
 """
 
-import streamlit as st
-import tempfile
-import os
-import time
+# Import all necessary modules
+from __future__ import annotations
+import os, io, time, json
 from pathlib import Path
+from typing import Dict, Optional, List, Tuple
 
-# Import core modules
-from core.model_loader import ModelLoader
-from core.audio_recorder import AudioRecorder
-from core.transcriber import AudioTranscriber
+import numpy as np
+import librosa
+import torch
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Tokenizer
 
-class ArabicWordRecognitionApp:
-    """Main application class for Arabic word recognition"""
+# --------------------------- FastAPI App Setup ---------------------------
 
-    def __init__(self):
-        """Initialize application components"""
-        self.model_loader = ModelLoader()
-        self.recorder = AudioRecorder()
-        self.transcriber = None
-        self.setup_page_config()
+app = FastAPI(
+    title="Arabic Word Recognition API",
+    description="API for transcribing Arabic words from audio using Wav2Vec2-Large-XLSR-53-Arabic",
+    version="2.0.0"
+)
 
-    @staticmethod
-    def setup_page_config():
-        """Configure Streamlit page settings"""
-        st.set_page_config(
-            page_title="Arabic Word Recognition",
-            page_icon="🎤",
-            layout="centered",
-            initial_sidebar_state="collapsed"
+# Add CORS middleware for Hugging Face Spaces
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --------------------------- Model Loading ---------------------------
+
+_WORD_MODEL: Optional[Wav2Vec2ForCTC] = None
+_WORD_TOKENIZER: Optional[Wav2Vec2Tokenizer] = None
+
+def _load_word_model_once():
+    """Load the Arabic word transcription model (Wav2Vec2-Large-XLSR-53-Arabic)"""
+    global _WORD_MODEL, _WORD_TOKENIZER
+    if _WORD_MODEL is None:
+        model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
+        print(f"Loading model: {model_name}")
+        _WORD_TOKENIZER = Wav2Vec2Tokenizer.from_pretrained(model_name)
+        _WORD_MODEL = Wav2Vec2ForCTC.from_pretrained(model_name)
+        _WORD_MODEL.eval()  # Set to evaluation mode
+        print("Model loaded successfully!")
+    return _WORD_MODEL, _WORD_TOKENIZER
+
+# Load model on startup
+@app.on_event("startup")
+async def startup_event():
+    """Load model when the app starts"""
+    _load_word_model_once()
+
+# --------------------------- Health Check Endpoint ---------------------------
+
+@app.get("/")
+def root():
+    """Root endpoint - health check"""
+    return {
+        "status": "running",
+        "service": "Arabic Word Recognition API",
+        "version": "2.0.0",
+        "model": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic",
+        "endpoints": {
+            "verify": "/verify_word (POST) - Main endpoint",
+            "transcribe": "/transcribe_word (POST)",
+            "docs": "/docs",
+            "health": "/health"
+        }
+    }
+
+@app.get("/health")
+def health():
+    """Health check endpoint"""
+    return {"status": "healthy"}
+
+# --------------------------- Arabic Word Transcription Endpoint ---------------------------
+
+@app.post("/verify_word", response_class=JSONResponse)
+async def verify_word(
+    audio: UploadFile = File(...),
+    target_word: str = Form(...),
+    threshold: float = Form(0.6)
+):
+    """
+    Verify if audio matches target Arabic word and exceeds confidence threshold.
+    
+    Parameters:
+    - audio: WAV audio file containing spoken Arabic word
+    - target_word: The expected Arabic word (e.g., "اللَّهِ", "مِنَ")
+    - threshold: Confidence threshold (0.0 to 1.0, default 0.6 = 60%)
+    
+    Returns:
+    - result: Boolean (True if match AND confidence >= threshold, False otherwise)
+    """
+    model, tokenizer = _load_word_model_once()
+    
+    # Read audio file
+    content = await audio.read()
+    try:
+        # Use librosa to load audio
+        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "result": False,
+                "error": f"Could not read audio file. Expected WAV format. Error: {type(e).__name__}: {e}"
+            }
         )
-
-    def load_models(self):
-        """Load AI models with progress indication"""
-        with st.spinner("🔄 Loading Wav2Vec2 Arabic model..."):
-            model, tokenizer, success = self.model_loader.load_model()
-
-        if not success:
-            st.error("❌ Failed to load model. Please check internet connection and try again.")
-            st.stop()
-
-        self.transcriber = AudioTranscriber(model, tokenizer)
-        st.success("✅ Model loaded successfully!")
-        return success
-
-    def render_header(self):
-        """Render application header"""
-        st.title("🎤 Arabic Word Recognition System")
-        st.markdown("**Real-time Arabic speech-to-text using Wav2Vec2**")
-        st.markdown("---")
-
-    def render_performance_stats(self):
-        """Render model performance statistics"""
-        with st.expander("📊 Model Performance - Quranic Vocabulary Test"):
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.metric("Average Accuracy", "95.3%")
-            with col2:
-                st.metric("Confidence Score", "94.7%")
-            with col3:
-                st.metric("Perfect Matches", "73.3%")
-            with col4:
-                st.metric("Test Words", "30/30")
-
-            st.info("""
-            **Performance Highlights:**
-            - ✅ Tested on 30 most frequent Quranic words
-            - ✅ 22/30 perfect matches (73.3%)
-            - ✅ 8/30 minor variations in diacritics (26.7%)
-            - ✅ Zero major recognition errors
-            - ⚠️ Minor diacritical mark variations expected
-            """)
-
-    def render_recording_interface(self):
-        """Render recording controls"""
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            st.subheader("🎛️ Settings")
-            duration = st.slider(
-                "Recording Duration (seconds)",
-                min_value=2,
-                max_value=5,
-                value=3,
-                help="Adjust recording length for your speech"
-            )
-            st.info(f"📝 Will record for {duration} seconds")
-
-        with col2:
-            st.subheader("🔴 Record")
-            record_button = st.button(
-                "🎤 Start Recording",
-                type="primary",
-                use_container_width=True
-            )
-
-        return duration, record_button
-
-    def handle_recording(self, duration: int):
-        """Handle the recording process"""
-        # Countdown
-        countdown_placeholder = st.empty()
-        for i in range(3, 0, -1):
-            countdown_placeholder.warning(f"🔴 Recording starts in {i}...")
-            time.sleep(1)
-        countdown_placeholder.success("🎤 Recording NOW!")
-
-        # Record audio
-        with st.spinner(f"📡 Recording for {duration} seconds..."):
-            success = self.recorder.record_audio(duration)
-
-        if not success:
-            st.error("❌ Recording failed. Check microphone permissions.")
-            return None
-
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            temp_path = tmp.name
-
-        if not self.recorder.save_recording(temp_path):
-            st.error("❌ Failed to save recording.")
-            return None
-
-        return temp_path
-
-    def display_results(self, transcription: str):
-        """Display transcription results"""
-        st.markdown("---")
-        st.subheader("📝 Recognition Results")
-
-        if transcription:
-            st.markdown("### 🎯 Recognized Arabic Text:")
-            st.markdown(
-                f"<div style='font-size: 32px; font-weight: bold; "
-                f"text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); "
-                f"color: white; border-radius: 10px; margin: 10px 0;'>{transcription}</div>",
-                unsafe_allow_html=True
-            )
-
-            st.success("✨ Transcription completed using Wav2Vec2-Large-XLSR-53-Arabic")
-
-        else:
-            st.warning("⚠️ No speech detected. Please try again with clearer pronunciation.")
-
-    def render_instructions(self):
-        """Render usage instructions"""
-        st.markdown("---")
-        st.subheader("📖 How to Use")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("""
-            **Quick Start:**
-            1. 🎛️ Set recording duration (2-5 seconds)
-            2. 🎤 Click "Start Recording"
-            3. 🗣️ Speak your Arabic word clearly
-            4. 📝 View the recognized text
-            """)
-
-        with col2:
-            st.markdown("""
-            **Tips for Best Results:**
-            - 🔇 Use a quiet environment
-            - 🎙️ Speak clearly at normal pace
-            - 📱 Keep microphone close
-            - 🕌 Try Quranic vocabulary for best accuracy
-            """)
-
-    def render_technical_info(self):
-        """Render technical information"""
-        with st.expander("🔧 Technical Information"):
-            model_info = self.model_loader.get_model_info()
-            audio_config = self.recorder.get_audio_config()
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.markdown("**Model Specifications:**")
-                for key, value in model_info.items():
-                    st.text(f"• {key.replace('_', ' ').title()}: {value}")
-
-            with col2:
-                st.markdown("**Audio Configuration:**")
-                for key, value in audio_config.items():
-                    st.text(f"• {key.replace('_', ' ').title()}: {value}")
-
-            st.markdown("""
-            **Performance Metrics (Quranic Words):**
-            - Average Recognition Accuracy: 95.3%
-            - Average Confidence Score: 94.7%
-            - Perfect Match Rate: 73.3%
-            - Tested on 30 most frequent Quranic words
-            """)
-
-    def run(self):
-        """Main application loop"""
-        # Render UI components
-        self.render_header()
-        self.load_models()
-        self.render_performance_stats()
-
-        # Recording interface
-        duration, record_button = self.render_recording_interface()
-
-        # Handle recording
-        if record_button:
-            temp_path = self.handle_recording(duration)
-
-            if temp_path:
-                # Display audio player
-                st.audio(temp_path, format="audio/wav")
-
-                # Transcribe
-                with st.spinner("🤖 Analyzing speech with AI..."):
-                    transcription = self.transcriber.transcribe(temp_path)
-
-                # Display results
-                self.display_results(transcription)
-
-                # Cleanup
-                try:
-                    time.sleep(0.1)
-                    os.unlink(temp_path)
-                except:
-                    pass
-
-        # Instructions and technical info
-        self.render_instructions()
-        self.render_technical_info()
-
-        # Footer
-        st.markdown("---")
-        st.markdown(
-            "<div style='text-align: center; color: #666;'>"
-            "Arabic Word Recognition System v2.0 | "
-            "Built with Wav2Vec2 & Streamlit | "
-            "© 2024 Yaqoob Ansari"
-            "</div>",
-            unsafe_allow_html=True
+    
+    if len(y) == 0:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "result": False,
+                "error": "Empty audio file"
+            }
+        )
+    
+    # Validate threshold
+    if not 0.0 <= threshold <= 1.0:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "result": False,
+                "error": "Threshold must be between 0.0 and 1.0"
+            }
+        )
+    
+    # Normalize audio amplitude
+    max_amplitude = max(abs(y))
+    if max_amplitude > 0:
+        y = y / max_amplitude
+    
+    # Perform transcription
+    try:
+        # Tokenize audio
+        inputs = tokenizer(
+            y,
+            sampling_rate=16000,
+            return_tensors="pt",
+            padding=True
+        )
+        
+        # Perform inference
+        with torch.no_grad():
+            logits = model(inputs.input_values).logits
+        
+        # Decode predictions
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = tokenizer.batch_decode(predicted_ids)[0].strip()
+        
+        # Calculate confidence score
+        probabilities = torch.softmax(logits, dim=-1)
+        max_probs = torch.max(probabilities, dim=-1).values
+        confidence = torch.mean(max_probs).item()  # 0.0 to 1.0
+        
+        # Check if transcription matches target_word (exact match)
+        matches = transcription == target_word.strip()
+        
+        # Check if confidence exceeds threshold
+        exceeds_threshold = confidence >= threshold
+        
+        # Final result: both conditions must be true
+        result = matches and exceeds_threshold
+        
+        return JSONResponse({
+            "result": result
+        })
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "result": False,
+                "error": f"Transcription failed: {type(e).__name__}: {e}"
+            }
         )
 
 
-def main():
-    """Application entry point"""
-    app = ArabicWordRecognitionApp()
-    app.run()
+@app.post("/transcribe_word", response_class=JSONResponse)
+async def transcribe_word(audio: UploadFile = File(...)):
+    """
+    Endpoint for transcribing Arabic words from audio (speech-to-text).
+    
+    Parameters:
+    - audio: WAV audio file containing spoken Arabic word(s)
+    
+    Returns:
+    - transcription: The recognized Arabic text
+    - confidence: Confidence score (if available)
+    - latency_ms: Processing time in milliseconds
+    """
+    model, tokenizer = _load_word_model_once()
+    
+    # Read audio file
+    content = await audio.read()
+    try:
+        # Use librosa to load audio (same as the Streamlit app)
+        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"Could not read audio file. Expected WAV format. Error: {type(e).__name__}: {e}",
+                "transcription": None
+            }
+        )
+    
+    if len(y) == 0:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Empty audio file",
+                "transcription": None
+            }
+        )
+    
+    # Normalize audio amplitude (same as Streamlit app)
+    max_amplitude = max(abs(y))
+    if max_amplitude > 0:
+        y = y / max_amplitude
+    
+    # Perform transcription
+    t0 = time.perf_counter()
+    try:
+        # Tokenize audio
+        inputs = tokenizer(
+            y,
+            sampling_rate=16000,
+            return_tensors="pt",
+            padding=True
+        )
+        
+        # Perform inference
+        with torch.no_grad():
+            logits = model(inputs.input_values).logits
+        
+        # Decode predictions
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = tokenizer.batch_decode(predicted_ids)[0]
+        
+        # Calculate confidence score
+        probabilities = torch.softmax(logits, dim=-1)
+        max_probs = torch.max(probabilities, dim=-1).values
+        confidence = torch.mean(max_probs).item() * 100
+        
+        t1 = time.perf_counter()
+        
+        return JSONResponse({
+            "transcription": transcription.strip(),
+            "confidence": round(confidence, 2),
+            "latency_ms": round((t1 - t0) * 1000.0, 2),
+            "model": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
+        })
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": f"Transcription failed: {type(e).__name__}: {e}",
+                "transcription": None
+            }
+        )
 
-
-if __name__ == "__main__":
-    main()
+# For Hugging Face Spaces, the app is automatically served
+# For local development, you can run: uvicorn app:app --host 0.0.0.0 --port 7860
