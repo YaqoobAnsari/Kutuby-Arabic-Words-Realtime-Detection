@@ -1,7 +1,7 @@
 ---
-title: Arabic Word Recognition
+title: Arabic Word Verification API
 emoji: 🎤
-colorFrom: purple
+colorFrom: green
 colorTo: blue
 sdk: docker
 app_port: 7860
@@ -9,25 +9,37 @@ pinned: false
 license: mit
 ---
 
-# Arabic Word Recognition System
+# Arabic Word Verification API
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://huggingface.co/spaces/yansari/arabic-word-recognition)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A production-ready Arabic word recognition system powered by Wav2Vec2-Large-XLSR-53-Arabic for real-time speech-to-text conversion. Achieves **95.3% accuracy** on Quranic vocabulary with robust handling of Modern Standard Arabic (MSA).
+FastAPI backend for verifying Arabic word pronunciation using Wav2Vec2-Large-XLSR-53-Arabic. Returns a simple boolean result.
 
-## Overview
+## API Endpoint
 
-This system provides real-time Arabic speech recognition using state-of-the-art transformer-based models. Built for educational applications, language learning platforms, and Arabic NLP research.
+### POST `/verify_word`
 
-### Key Features
+Verifies if an audio file matches the target Arabic word with sufficient confidence.
 
-- **High Accuracy**: 95.3% average accuracy on Quranic vocabulary
-- **Real-time Processing**: Fast transcription with Wav2Vec2 architecture
-- **Production-Ready**: Clean OOP architecture with proper error handling
-- **Easy Deployment**: One-command setup for local and cloud deployment
-- **Model Performance**: 73.3% perfect match rate, 94.7% confidence score
+**Parameters:**
+- `audio` (file): WAV audio file (multipart/form-data)
+- `target_word` (string): Expected Arabic word (e.g., "الله", "من", "في")
+- `threshold` (float): Confidence threshold 0.0-1.0 (default: 0.6)
+
+**Returns:**
+```json
+{
+  "result": true
+}
+```
+
+Returns `true` if BOTH conditions are met:
+1. The transcribed word matches `target_word` (exact match)
+2. The confidence score >= `threshold`
+
+Otherwise returns `false`.
 
 ## Performance Metrics
 
