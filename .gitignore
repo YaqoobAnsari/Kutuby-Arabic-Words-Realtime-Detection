@@ -94,6 +94,7 @@ desktop.ini
 tmp/
 temp/
 *.tmp
+tmpclaude-*/
 
 # PyAudio build artifacts
 portaudio/

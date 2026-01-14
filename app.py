@@ -15,11 +15,12 @@ import numpy as np
 import librosa
 import torch
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Tokenizer
+from core.arabic_utils import normalize_arabic_text
 
 # --------------------------- FastAPI App Setup ---------------------------
 
@@ -63,21 +64,314 @@ async def startup_event():
 
 # --------------------------- Health Check Endpoint ---------------------------
 
-@app.get("/")
-def root():
-    """Root endpoint - health check"""
-    return {
-        "status": "running",
-        "service": "Arabic Word Recognition API",
-        "version": "2.0.0",
-        "model": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic",
-        "endpoints": {
-            "verify": "/verify_word (POST) - Main endpoint",
-            "transcribe": "/transcribe_word (POST)",
-            "docs": "/docs",
-            "health": "/health"
-        }
-    }
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the web UI"""
+    return """
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>🎤 Arabic Word Recognition</title>
+        <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px;
+            }
+            .container {
+                background: white;
+                border-radius: 20px;
+                padding: 40px;
+                max-width: 600px;
+                width: 100%;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            }
+            h1 {
+                text-align: center;
+                color: #667eea;
+                margin-bottom: 30px;
+                font-size: 2em;
+            }
+            .input-group {
+                margin-bottom: 20px;
+            }
+            label {
+                display: block;
+                margin-bottom: 8px;
+                color: #333;
+                font-weight: 600;
+            }
+            input[type="text"] {
+                width: 100%;
+                padding: 12px;
+                border: 2px solid #e0e0e0;
+                border-radius: 8px;
+                font-size: 16px;
+                transition: border 0.3s;
+                text-align: right;
+                font-family: 'Arial', sans-serif;
+            }
+            input[type="text"]:focus {
+                outline: none;
+                border-color: #667eea;
+            }
+            .controls {
+                display: flex;
+                gap: 10px;
+                margin-bottom: 20px;
+            }
+            button {
+                flex: 1;
+                padding: 15px;
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s;
+            }
+            #recordBtn {
+                background: #4CAF50;
+                color: white;
+            }
+            #recordBtn:hover { background: #45a049; }
+            #recordBtn:disabled { background: #ccc; cursor: not-allowed; }
+
+            #stopBtn {
+                background: #f44336;
+                color: white;
+            }
+            #stopBtn:hover { background: #da190b; }
+            #stopBtn:disabled { background: #ccc; cursor: not-allowed; }
+
+            .status {
+                text-align: center;
+                padding: 12px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                font-weight: 600;
+            }
+            .status.recording { background: #ffebee; color: #c62828; }
+            .status.processing { background: #fff3e0; color: #e65100; }
+            .status.ready { background: #e8f5e9; color: #2e7d32; }
+
+            .results {
+                background: #f5f5f5;
+                border-radius: 8px;
+                padding: 20px;
+                margin-top: 20px;
+                display: none;
+            }
+            .results.show { display: block; }
+
+            .result-item {
+                margin-bottom: 15px;
+                padding-bottom: 15px;
+                border-bottom: 1px solid #ddd;
+            }
+            .result-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+
+            .result-label {
+                font-size: 14px;
+                color: #666;
+                margin-bottom: 5px;
+            }
+            .result-value {
+                font-size: 20px;
+                font-weight: 700;
+                color: #333;
+            }
+            .result-value.arabic {
+                font-size: 28px;
+                text-align: right;
+            }
+
+            .match-badge {
+                display: inline-block;
+                padding: 8px 16px;
+                border-radius: 20px;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            .match-badge.success { background: #4CAF50; color: white; }
+            .match-badge.fail { background: #f44336; color: white; }
+
+            .confidence-bar {
+                width: 100%;
+                height: 30px;
+                background: #e0e0e0;
+                border-radius: 15px;
+                overflow: hidden;
+                margin-top: 8px;
+            }
+            .confidence-fill {
+                height: 100%;
+                background: linear-gradient(90deg, #4CAF50, #8BC34A);
+                transition: width 0.5s ease;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: white;
+                font-weight: 600;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎤 التعرف على الكلمات العربية</h1>
+
+            <div class="input-group">
+                <label for="targetWord">الكلمة المستهدفة (Target Word):</label>
+                <input type="text" id="targetWord" placeholder="اكتب الكلمة بالتشكيل (e.g., اللَّهِ)">
+            </div>
+
+            <div class="controls">
+                <button id="recordBtn">🎤 ابدأ التسجيل (Record)</button>
+                <button id="stopBtn" disabled>⏹️ إيقاف (Stop)</button>
+            </div>
+
+            <div id="status" class="status ready">جاهز للتسجيل (Ready)</div>
+
+            <div id="results" class="results">
+                <div class="result-item">
+                    <div class="result-label">النص المنسوخ (Transcription):</div>
+                    <div id="transcription" class="result-value arabic">-</div>
+                </div>
+
+                <div class="result-item">
+                    <div class="result-label">درجة الثقة (Confidence Score):</div>
+                    <div class="confidence-bar">
+                        <div id="confidenceFill" class="confidence-fill" style="width: 0%">0%</div>
+                    </div>
+                </div>
+
+                <div class="result-item">
+                    <div class="result-label">نتيجة التحقق (Verification):</div>
+                    <div id="verification">-</div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            let mediaRecorder;
+            let audioChunks = [];
+            const recordBtn = document.getElementById('recordBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            const status = document.getElementById('status');
+            const results = document.getElementById('results');
+            const targetWordInput = document.getElementById('targetWord');
+
+            recordBtn.onclick = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                    };
+
+                    mediaRecorder.onstop = async () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                        await processAudio(audioBlob);
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+
+                    mediaRecorder.start();
+                    recordBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    status.className = 'status recording';
+                    status.textContent = '🔴 جاري التسجيل... (Recording...)';
+                    results.classList.remove('show');
+                } catch (error) {
+                    alert('خطأ في الوصول للميكروفون (Microphone access error): ' + error.message);
+                }
+            };
+
+            stopBtn.onclick = () => {
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    mediaRecorder.stop();
+                    recordBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    status.className = 'status processing';
+                    status.textContent = '⏳ جاري المعالجة... (Processing...)';
+                }
+            };
+
+            async function processAudio(audioBlob) {
+                const targetWord = targetWordInput.value.trim();
+
+                if (!targetWord) {
+                    alert('الرجاء إدخال الكلمة المستهدفة (Please enter target word)');
+                    status.className = 'status ready';
+                    status.textContent = 'جاهز للتسجيل (Ready)';
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.wav');
+                formData.append('target_word', targetWord);
+                formData.append('threshold', '0.6');
+
+                try {
+                    // Call verify_word endpoint
+                    const response = await fetch('/verify_word', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('API request failed');
+                    }
+
+                    const data = await response.json();
+
+                    // Also get detailed transcription with confidence
+                    const formData2 = new FormData();
+                    formData2.append('audio', audioBlob, 'recording.wav');
+
+                    const transcribeResponse = await fetch('/transcribe_word', {
+                        method: 'POST',
+                        body: formData2
+                    });
+
+                    const transcribeData = await transcribeResponse.json();
+
+                    // Display results
+                    document.getElementById('transcription').textContent = transcribeData.transcription || 'N/A';
+
+                    const confidence = Math.round((transcribeData.confidence || 0) * 100);
+                    document.getElementById('confidenceFill').style.width = confidence + '%';
+                    document.getElementById('confidenceFill').textContent = confidence + '%';
+
+                    const verificationDiv = document.getElementById('verification');
+                    if (data.result) {
+                        verificationDiv.innerHTML = '<span class="match-badge success">✅ تطابق (Match)</span>';
+                    } else {
+                        verificationDiv.innerHTML = '<span class="match-badge fail">❌ لا تطابق (No Match)</span>';
+                    }
+
+                    results.classList.add('show');
+                    status.className = 'status ready';
+                    status.textContent = '✅ اكتمل! (Complete!)';
+
+                } catch (error) {
+                    alert('خطأ: ' + error.message);
+                    status.className = 'status ready';
+                    status.textContent = 'جاهز للتسجيل (Ready)';
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """
 
 @app.get("/health")
 def health():
@@ -166,8 +460,12 @@ async def verify_word(
         max_probs = torch.max(probabilities, dim=-1).values
         confidence = torch.mean(max_probs).item()  # 0.0 to 1.0
         
-        # Check if transcription matches target_word (exact match)
-        matches = transcription == target_word.strip()
+        # Normalize both transcription and target word for Arabic text comparison
+        normalized_transcription = normalize_arabic_text(transcription)
+        normalized_target = normalize_arabic_text(target_word.strip())
+
+        # Check if normalized texts match
+        matches = normalized_transcription == normalized_target
         
         # Check if confidence exceeds threshold
         exceeds_threshold = confidence >= threshold

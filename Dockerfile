@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY app.py .
+COPY core/ ./core/
 
 # Expose port for HuggingFace Spaces
 EXPOSE 7860
