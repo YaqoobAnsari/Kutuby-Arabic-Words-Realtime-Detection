@@ -384,18 +384,23 @@ def health():
 async def verify_word(
     audio: UploadFile = File(...),
     target_word: str = Form(...),
-    threshold: float = Form(0.6)
+    threshold: float = Form(0.6),
+    fuzzy_match: bool = Form(True),
+    fuzzy_threshold: float = Form(None)
 ):
     """
     Verify if audio matches target Arabic word and exceeds confidence threshold.
-    
+
     Parameters:
     - audio: WAV audio file containing spoken Arabic word
     - target_word: The expected Arabic word (e.g., "اللَّهِ", "مِنَ")
     - threshold: Confidence threshold (0.0 to 1.0, default 0.6 = 60%)
-    
+    - fuzzy_match: Enable fuzzy matching for minor variations (default True)
+    - fuzzy_threshold: Custom fuzzy threshold (0-100), overrides dynamic threshold (default None = auto)
+
     Returns:
     - result: Boolean (True if match AND confidence >= threshold, False otherwise)
+    - similarity: Fuzzy match similarity score (0-100, only if fuzzy_match=True)
     """
     model, tokenizer = _load_word_model_once()
     
@@ -460,21 +465,35 @@ async def verify_word(
         max_probs = torch.max(probabilities, dim=-1).values
         confidence = torch.mean(max_probs).item()  # 0.0 to 1.0
         
-        # Normalize both transcription and target word for Arabic text comparison
-        normalized_transcription = normalize_arabic_text(transcription)
-        normalized_target = normalize_arabic_text(target_word.strip())
+        # Perform word matching (exact or fuzzy based on fuzzy_match parameter)
+        if fuzzy_match:
+            # Import fuzzy matching function
+            from core.arabic_utils import fuzzy_match_arabic_words
 
-        # Check if normalized texts match
-        matches = normalized_transcription == normalized_target
-        
+            # Use fuzzy matching with dynamic threshold
+            matches, similarity_score = fuzzy_match_arabic_words(
+                transcription=transcription,
+                target=target_word.strip(),
+                custom_threshold=fuzzy_threshold
+            )
+        else:
+            # Exact match (backward compatibility)
+            from core.arabic_utils import normalize_arabic_text
+            normalized_transcription = normalize_arabic_text(transcription)
+            normalized_target = normalize_arabic_text(target_word.strip())
+            matches = normalized_transcription == normalized_target
+            similarity_score = 100.0 if matches else 0.0
+
         # Check if confidence exceeds threshold
         exceeds_threshold = confidence >= threshold
-        
+
         # Final result: both conditions must be true
         result = matches and exceeds_threshold
-        
+
+        # Return result with similarity score
         return JSONResponse({
-            "result": result
+            "result": result,
+            "similarity": round(similarity_score, 2)
         })
         
     except Exception as e:

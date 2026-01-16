@@ -111,3 +111,111 @@ def compare_arabic_words(word1: str, word2: str, normalize: bool = True) -> bool
     if normalize:
         return normalize_arabic_text(word1) == normalize_arabic_text(word2)
     return word1.strip() == word2.strip()
+
+
+# --------------------------- Fuzzy Matching Utilities ---------------------------
+
+# Import fuzzy matching library with fallback
+try:
+    from rapidfuzz import fuzz
+    FUZZY_BACKEND = "rapidfuzz"
+except ImportError:
+    import difflib
+    FUZZY_BACKEND = "difflib"
+
+
+def get_dynamic_threshold(word_length: int) -> float:
+    """
+    Get dynamic fuzzy matching threshold based on word length.
+
+    Shorter words require stricter matching to avoid false positives,
+    while longer words can tolerate more character variations.
+
+    Args:
+        word_length: Length of the normalized target word
+
+    Returns:
+        Threshold value (0-100 scale) for fuzzy matching
+
+    Examples:
+        >>> get_dynamic_threshold(2)
+        95.0
+        >>> get_dynamic_threshold(4)
+        85.0
+        >>> get_dynamic_threshold(10)
+        75.0
+    """
+    if word_length <= 2:
+        return 95.0  # Very strict for short words (1-2 chars)
+    elif word_length <= 4:
+        return 85.0  # High threshold for short words (3-4 chars)
+    elif word_length <= 8:
+        return 80.0  # Moderate threshold for medium words (5-8 chars)
+    else:
+        return 75.0  # More lenient for long words (9+ chars)
+
+
+def fuzzy_match_arabic_words(
+    transcription: str,
+    target: str,
+    custom_threshold: Optional[float] = None
+) -> tuple[bool, float]:
+    """
+    Fuzzy match two Arabic words with dynamic threshold based on word length.
+
+    Uses RapidFuzz (if available) or difflib for fuzzy string matching.
+    Automatically normalizes both inputs before comparison.
+
+    Args:
+        transcription: Transcribed Arabic text from audio
+        target: Expected Arabic word to match against
+        custom_threshold: Optional custom threshold (0-100) to override dynamic threshold
+
+    Returns:
+        Tuple of (matches: bool, similarity_score: float)
+        - matches: True if similarity >= threshold, False otherwise
+        - similarity_score: Similarity percentage (0-100)
+
+    Examples:
+        >>> fuzzy_match_arabic_words("الله", "الله")
+        (True, 100.0)
+        >>> fuzzy_match_arabic_words("اللة", "الله")
+        (True, 87.5)  # 1-char difference in 4-char word, passes 85% threshold
+        >>> fuzzy_match_arabic_words("من", "في")
+        (False, 0.0)  # Completely different short words
+    """
+    # Normalize both inputs
+    norm_trans = normalize_arabic_text(transcription)
+    norm_target = normalize_arabic_text(target)
+
+    # Handle empty inputs
+    if not norm_trans or not norm_target:
+        return (False, 0.0)
+
+    # Fast-path: Check for exact match first
+    if norm_trans == norm_target:
+        return (True, 100.0)
+
+    # Calculate similarity based on available backend
+    if FUZZY_BACKEND == "rapidfuzz":
+        # Use RapidFuzz (preferred - faster and more accurate)
+        similarity = fuzz.ratio(norm_trans, norm_target)
+        # Also try partial_ratio for insertions/deletions
+        partial_sim = fuzz.partial_ratio(norm_trans, norm_target)
+        # Take maximum of both metrics
+        similarity_score = max(similarity, partial_sim)
+    else:
+        # Fallback to difflib
+        similarity = difflib.SequenceMatcher(None, norm_trans, norm_target).ratio()
+        similarity_score = similarity * 100.0  # Convert to 0-100 scale
+
+    # Determine threshold
+    if custom_threshold is not None:
+        threshold = float(custom_threshold)
+    else:
+        threshold = get_dynamic_threshold(len(norm_target))
+
+    # Check if similarity meets threshold
+    matches = similarity_score >= threshold
+
+    return (matches, round(similarity_score, 2))
