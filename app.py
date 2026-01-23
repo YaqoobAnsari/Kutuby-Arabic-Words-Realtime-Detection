@@ -430,15 +430,27 @@ async def verify_word(
 
     # Read audio file
     content = await audio.read()
-    try:
-        # Use librosa to load audio
-        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
-    except Exception as e:
+
+    # Check if content is empty
+    if not content or len(content) == 0:
         return JSONResponse(
             status_code=400,
             content={
                 "result": False,
-                "error": f"Could not read audio file. Expected WAV format. Error: {type(e).__name__}: {e}"
+                "error": "No audio data received"
+            }
+        )
+
+    try:
+        # Use librosa to load audio (supports WAV, MP3, OGG, FLAC, etc.)
+        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
+    except Exception as e:
+        print(f"Audio loading error in verify_word: {type(e).__name__}: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "result": False,
+                "error": f"Could not read audio file. Error: {type(e).__name__}: {str(e)}"
             }
         )
 
@@ -547,14 +559,26 @@ async def transcribe_word(audio: UploadFile = File(...)):
 
     # Read audio file
     content = await audio.read()
-    try:
-        # Use librosa to load audio (same as the Streamlit app)
-        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
-    except Exception as e:
+
+    # Check if content is empty
+    if not content or len(content) == 0:
         return JSONResponse(
             status_code=400,
             content={
-                "error": f"Could not read audio file. Expected WAV format. Error: {type(e).__name__}: {e}",
+                "error": "No audio data received",
+                "transcription": None
+            }
+        )
+
+    try:
+        # Use librosa to load audio (supports WAV, MP3, OGG, FLAC, etc.)
+        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
+    except Exception as e:
+        print(f"Audio loading error: {type(e).__name__}: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"Could not read audio file. Error: {type(e).__name__}: {str(e)}",
                 "transcription": None
             }
         )
