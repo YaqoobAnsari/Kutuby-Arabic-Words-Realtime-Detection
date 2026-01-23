@@ -7,9 +7,10 @@ Arabic Word Recognition API - FastAPI Backend
 
 # Import all necessary modules
 from __future__ import annotations
-import os, io, time, json
+import os, io, time, json, logging
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
+from datetime import datetime
 
 import numpy as np
 import librosa
@@ -21,6 +22,13 @@ import uvicorn
 
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from core.arabic_utils import normalize_arabic_text
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # --------------------------- FastAPI App Setup ---------------------------
 
@@ -49,18 +57,22 @@ def _load_word_model_once():
     global _WORD_MODEL, _WORD_PROCESSOR
     if _WORD_MODEL is None:
         model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
-        print(f"Loading model: {model_name}")
+        logger.info(f"🔄 Loading model: {model_name}")
+        start_time = time.time()
         _WORD_PROCESSOR = Wav2Vec2Processor.from_pretrained(model_name)
         _WORD_MODEL = Wav2Vec2ForCTC.from_pretrained(model_name)
         _WORD_MODEL.eval()  # Set to evaluation mode
-        print("Model loaded successfully!")
+        load_time = time.time() - start_time
+        logger.info(f"✅ Model loaded successfully in {load_time:.2f}s")
     return _WORD_MODEL, _WORD_PROCESSOR
 
 # Load model on startup for HuggingFace Space (has enough time during build)
 @app.on_event("startup")
 async def startup_event():
     """Load model when the app starts"""
+    logger.info("🚀 Application startup initiated")
     _load_word_model_once()
+    logger.info("✅ Application ready to serve requests")
 
 # --------------------------- Health Check Endpoint ---------------------------
 
@@ -293,19 +305,26 @@ async def root():
 
             <div id="results" class="results">
                 <div class="result-section">
-                    <div class="result-label">Transcription</div>
+                    <div class="result-label">📝 Transcription</div>
                     <div id="transcription" class="result-value">—</div>
                 </div>
 
                 <div class="divider"></div>
 
                 <div class="result-section">
-                    <div class="result-label">Confidence Score</div>
+                    <div class="result-label">🎯 Confidence Score</div>
                     <div class="confidence-container">
                         <div id="confidenceFill" class="confidence-fill" style="width: 0%">
                             <span id="confidenceText" class="confidence-text">0%</span>
                         </div>
                     </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="result-section">
+                    <div class="result-label">⏱️ Processing Time</div>
+                    <div id="processingTime" class="result-value" style="font-size: 18px;">—</div>
                 </div>
             </div>
 
@@ -375,16 +394,24 @@ async def root():
 
                     const data = await response.json();
 
-                    // Display results
-                    document.getElementById('transcription').textContent = data.transcription || 'No transcription';
+                    // Display transcription
+                    const transcriptionEl = document.getElementById('transcription');
+                    transcriptionEl.textContent = data.transcription || 'No transcription';
+                    transcriptionEl.style.color = data.transcription ? '#1a202c' : '#a0aec0';
 
+                    // Display confidence score
                     const confidence = Math.round(data.confidence || 0);
                     document.getElementById('confidenceFill').style.width = confidence + '%';
                     document.getElementById('confidenceText').textContent = confidence + '%';
 
+                    // Display processing time
+                    const processingTime = data.total_time_ms || data.latency_ms || 0;
+                    document.getElementById('processingTime').textContent = `${Math.round(processingTime)}ms`;
+
+                    // Show results
                     results.classList.add('show');
                     statusBar.className = 'status-bar ready';
-                    statusBar.textContent = 'Ready to record';
+                    statusBar.textContent = `✅ Complete in ${Math.round(processingTime)}ms`;
 
                 } catch (error) {
                     alert('Error: ' + error.message);
@@ -400,7 +427,13 @@ async def root():
 @app.get("/health")
 def health():
     """Health check endpoint"""
-    return {"status": "healthy"}
+    logger.info("🏥 Health check requested")
+    model_loaded = _WORD_MODEL is not None and _WORD_PROCESSOR is not None
+    return {
+        "status": "healthy" if model_loaded else "loading",
+        "model_loaded": model_loaded,
+        "timestamp": datetime.now().isoformat()
+    }
 
 # --------------------------- Arabic Word Transcription Endpoint ---------------------------
 
@@ -426,13 +459,18 @@ async def verify_word(
     - result: Boolean (True if match AND confidence >= threshold, False otherwise)
     - similarity: Fuzzy match similarity score (0-100, only if fuzzy_match=True)
     """
+    request_start = time.time()
+    logger.info(f"🎯 /verify_word called - target: '{target_word}', threshold: {threshold}, fuzzy: {fuzzy_match}")
+
     model, processor = _load_word_model_once()
 
     # Read audio file
     content = await audio.read()
+    logger.info(f"📁 Audio file received: {len(content)} bytes, filename: {audio.filename}")
 
     # Check if content is empty
     if not content or len(content) == 0:
+        logger.error("❌ No audio data received")
         return JSONResponse(
             status_code=400,
             content={
@@ -444,8 +482,9 @@ async def verify_word(
     try:
         # Use librosa to load audio (supports WAV, MP3, OGG, FLAC, etc.)
         y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
+        logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
     except Exception as e:
-        print(f"Audio loading error in verify_word: {type(e).__name__}: {e}")
+        logger.error(f"❌ Audio loading error: {type(e).__name__}: {e}")
         return JSONResponse(
             status_code=400,
             content={
@@ -526,13 +565,24 @@ async def verify_word(
         # Final result: both conditions must be true
         result = matches and exceeds_threshold
 
-        # Return result with similarity score
+        # Calculate processing time
+        processing_time = (time.time() - request_start) * 1000
+
+        logger.info(f"✅ Transcription: '{transcription}' | Confidence: {confidence*100:.1f}% | Similarity: {similarity_score:.1f}% | Match: {matches} | Result: {result} | Time: {processing_time:.0f}ms")
+
+        # Return result with all details
         return JSONResponse({
             "result": result,
-            "similarity": round(similarity_score, 2)
+            "transcription": transcription,
+            "target_word": target_word.strip(),
+            "similarity": round(similarity_score, 2),
+            "confidence": round(confidence * 100, 2),
+            "threshold": threshold * 100,
+            "processing_time_ms": round(processing_time, 2)
         })
-        
+
     except Exception as e:
+        logger.error(f"❌ verify_word error: {type(e).__name__}: {e}")
         return JSONResponse(
             status_code=500,
             content={
@@ -546,22 +596,27 @@ async def verify_word(
 async def transcribe_word(audio: UploadFile = File(...)):
     """
     Endpoint for transcribing Arabic words from audio (speech-to-text).
-    
+
     Parameters:
     - audio: WAV audio file containing spoken Arabic word(s)
-    
+
     Returns:
     - transcription: The recognized Arabic text
     - confidence: Confidence score (if available)
     - latency_ms: Processing time in milliseconds
     """
+    request_start = time.time()
+    logger.info(f"🎤 /transcribe_word called - filename: {audio.filename}")
+
     model, processor = _load_word_model_once()
 
     # Read audio file
     content = await audio.read()
+    logger.info(f"📁 Audio file received: {len(content)} bytes")
 
     # Check if content is empty
     if not content or len(content) == 0:
+        logger.error("❌ No audio data received")
         return JSONResponse(
             status_code=400,
             content={
@@ -573,8 +628,9 @@ async def transcribe_word(audio: UploadFile = File(...)):
     try:
         # Use librosa to load audio (supports WAV, MP3, OGG, FLAC, etc.)
         y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
+        logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
     except Exception as e:
-        print(f"Audio loading error: {type(e).__name__}: {e}")
+        logger.error(f"❌ Audio loading error: {type(e).__name__}: {e}")
         return JSONResponse(
             status_code=400,
             content={
@@ -622,15 +678,21 @@ async def transcribe_word(audio: UploadFile = File(...)):
         confidence = torch.mean(max_probs).item() * 100
         
         t1 = time.perf_counter()
-        
+        latency_ms = (t1 - t0) * 1000.0
+        total_time_ms = (time.time() - request_start) * 1000
+
+        logger.info(f"✅ Transcription: '{transcription.strip()}' | Confidence: {confidence:.1f}% | Latency: {latency_ms:.0f}ms | Total: {total_time_ms:.0f}ms")
+
         return JSONResponse({
             "transcription": transcription.strip(),
             "confidence": round(confidence, 2),
-            "latency_ms": round((t1 - t0) * 1000.0, 2),
+            "latency_ms": round(latency_ms, 2),
+            "total_time_ms": round(total_time_ms, 2),
             "model": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
         })
-        
+
     except Exception as e:
+        logger.error(f"❌ transcribe_word error: {type(e).__name__}: {e}")
         return JSONResponse(
             status_code=500,
             content={
