@@ -56,11 +56,11 @@ def _load_word_model_once():
         print("Model loaded successfully!")
     return _WORD_MODEL, _WORD_PROCESSOR
 
-# Don't load model on startup - load on first request to avoid timeout
-# @app.on_event("startup")
-# async def startup_event():
-#     """Load model when the app starts"""
-#     _load_word_model_once()
+# Load model on startup for HuggingFace Space (has enough time during build)
+@app.on_event("startup")
+async def startup_event():
+    """Load model when the app starts"""
+    _load_word_model_once()
 
 # --------------------------- Health Check Endpoint ---------------------------
 
