@@ -6,10 +6,11 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 
-# Audio Processing (no PyAudio - not compatible with Docker)
+# Audio Processing (multiple backends for maximum compatibility)
 librosa>=0.10.0
 soundfile>=0.12.1
 resampy
+pydub>=0.25.1  # Fallback audio decoder
 
 # Machine Learning - Wav2Vec2
 torch>=2.0.0

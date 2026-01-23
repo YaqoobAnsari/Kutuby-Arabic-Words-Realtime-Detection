@@ -51,20 +51,56 @@ app.add_middleware(
 
 _WORD_MODEL: Optional[Wav2Vec2ForCTC] = None
 _WORD_PROCESSOR: Optional[Wav2Vec2Processor] = None
+_MODEL_DEVICE = None  # Cache device to avoid repeated checks
 
 def _load_word_model_once():
     """Load the Arabic word transcription model (Wav2Vec2-Large-XLSR-53-Arabic)"""
-    global _WORD_MODEL, _WORD_PROCESSOR
+    global _WORD_MODEL, _WORD_PROCESSOR, _MODEL_DEVICE
     if _WORD_MODEL is None:
         model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
         logger.info(f"🔄 Loading model: {model_name}")
         start_time = time.time()
+
+        # Load processor and model
         _WORD_PROCESSOR = Wav2Vec2Processor.from_pretrained(model_name)
         _WORD_MODEL = Wav2Vec2ForCTC.from_pretrained(model_name)
+
+        # Check for GPU and move model if available
+        _MODEL_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _WORD_MODEL = _WORD_MODEL.to(_MODEL_DEVICE)
         _WORD_MODEL.eval()  # Set to evaluation mode
+
+        # Enable torch compile for faster inference (PyTorch 2.0+)
+        if hasattr(torch, 'compile') and _MODEL_DEVICE.type == "cuda":
+            try:
+                logger.info("🚀 Compiling model with torch.compile for faster inference")
+                _WORD_MODEL = torch.compile(_WORD_MODEL, mode="reduce-overhead")
+            except Exception as e:
+                logger.warning(f"⚠️ torch.compile failed, using standard model: {e}")
+
         load_time = time.time() - start_time
-        logger.info(f"✅ Model loaded successfully in {load_time:.2f}s")
-    return _WORD_MODEL, _WORD_PROCESSOR
+        gpu_info = f" (GPU: {torch.cuda.get_device_name(0)})" if _MODEL_DEVICE.type == "cuda" else ""
+        logger.info(f"✅ Model loaded on {_MODEL_DEVICE.type.upper()}{gpu_info} in {load_time:.2f}s")
+
+        # Warm up model with dummy input (eliminates first-request slowness)
+        try:
+            logger.info("🔥 Warming up model with dummy inference...")
+            dummy_audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
+            dummy_inputs = _WORD_PROCESSOR(dummy_audio, sampling_rate=16000, return_tensors="pt", padding=True)
+            dummy_inputs = {k: v.to(_MODEL_DEVICE) for k, v in dummy_inputs.items()}
+
+            with torch.no_grad():
+                if _MODEL_DEVICE.type == "cuda":
+                    with torch.cuda.amp.autocast():
+                        _ = _WORD_MODEL(dummy_inputs["input_values"]).logits
+                else:
+                    _ = _WORD_MODEL(dummy_inputs["input_values"]).logits
+
+            logger.info("✅ Model warmed up and ready")
+        except Exception as e:
+            logger.warning(f"⚠️ Model warmup failed (non-critical): {e}")
+
+    return _WORD_MODEL, _WORD_PROCESSOR, _MODEL_DEVICE
 
 # Load model on startup for HuggingFace Space (has enough time during build)
 @app.on_event("startup")
@@ -73,6 +109,136 @@ async def startup_event():
     logger.info("🚀 Application startup initiated")
     _load_word_model_once()
     logger.info("✅ Application ready to serve requests")
+
+# --------------------------- Audio Loading with Multiple Backends ---------------------------
+
+def load_audio_robust(audio_data: bytes, sr: int = 16000) -> Tuple[np.ndarray, int]:
+    """
+    Load audio with multiple fallback methods for maximum compatibility.
+
+    Tries in order:
+    1. soundfile (fastest, handles WAV natively)
+    2. librosa with temp file (handles all formats via FFmpeg)
+    3. pydub (alternative decoder)
+
+    Args:
+        audio_data: Raw audio bytes
+        sr: Target sample rate (default 16000 Hz)
+
+    Returns:
+        Tuple of (audio_array, sample_rate)
+
+    Raises:
+        Exception: If all methods fail
+    """
+    import soundfile as sf
+    import tempfile
+    import os
+
+    errors = []
+
+    # Method 1: Try soundfile directly (fastest for WAV)
+    try:
+        logger.debug("🔧 Trying soundfile (direct BytesIO)")
+        y, original_sr = sf.read(io.BytesIO(audio_data))
+        if len(y.shape) > 1:  # Convert stereo to mono
+            y = np.mean(y, axis=1)
+        # Resample if needed
+        if original_sr != sr:
+            import librosa
+            y = librosa.resample(y, orig_sr=original_sr, target_sr=sr)
+        logger.info(f"✅ Audio loaded via soundfile: {len(y)} samples")
+        return y, sr
+    except Exception as e:
+        errors.append(f"soundfile: {type(e).__name__}: {str(e)}")
+        logger.debug(f"⚠️ soundfile failed: {e}")
+
+    # Method 2: Try FFmpeg directly (FAST - bypasses slow audioread)
+    try:
+        logger.debug("🔧 Trying FFmpeg direct decode")
+        import subprocess
+
+        # Use FFmpeg to decode directly to WAV in memory
+        cmd = [
+            'ffmpeg',
+            '-i', 'pipe:0',  # Read from stdin
+            '-f', 'wav',     # Output format
+            '-acodec', 'pcm_s16le',  # PCM 16-bit
+            '-ar', str(sr),  # Sample rate
+            '-ac', '1',      # Mono
+            'pipe:1'         # Write to stdout
+        ]
+
+        result = subprocess.run(
+            cmd,
+            input=audio_data,
+            capture_output=True,
+            timeout=5  # 5 second timeout
+        )
+
+        if result.returncode == 0:
+            # Parse WAV from stdout
+            import soundfile as sf
+            y, _ = sf.read(io.BytesIO(result.stdout))
+            logger.info(f"✅ Audio loaded via FFmpeg: {len(y)} samples")
+            return y, sr
+        else:
+            raise Exception(f"FFmpeg failed: {result.stderr.decode()[:200]}")
+
+    except Exception as e:
+        errors.append(f"FFmpeg: {type(e).__name__}: {str(e)}")
+        logger.debug(f"⚠️ FFmpeg failed: {e}")
+
+    # Method 3: Try librosa with temp file (slower fallback)
+    try:
+        logger.debug("🔧 Trying librosa+temp (slower)")
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as tmp_file:
+            tmp_file.write(audio_data)
+            tmp_path = tmp_file.name
+
+        try:
+            y, _ = librosa.load(tmp_path, sr=sr, mono=True)
+            logger.info(f"✅ Audio loaded via librosa: {len(y)} samples")
+            return y, sr
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+    except Exception as e:
+        errors.append(f"librosa: {type(e).__name__}: {str(e)}")
+        logger.debug(f"⚠️ librosa failed: {e}")
+
+    # Method 3: Try pydub (alternative decoder)
+    try:
+        logger.debug("🔧 Trying pydub (alternative decoder)")
+        from pydub import AudioSegment
+
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(audio_data)
+            tmp_path = tmp_file.name
+
+        try:
+            audio = AudioSegment.from_file(tmp_path)
+            # Convert to mono
+            if audio.channels > 1:
+                audio = audio.set_channels(1)
+            # Set sample rate
+            audio = audio.set_frame_rate(sr)
+            # Convert to numpy array
+            y = np.array(audio.get_array_of_samples()).astype(np.float32)
+            y = y / (2**15)  # Normalize to [-1, 1]
+            logger.info(f"✅ Audio loaded via pydub: {len(y)} samples")
+            return y, sr
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+    except Exception as e:
+        errors.append(f"pydub: {type(e).__name__}: {str(e)}")
+        logger.debug(f"⚠️ pydub failed: {e}")
+
+    # All methods failed
+    error_msg = "All audio loading methods failed:\n" + "\n".join(f"  - {err}" for err in errors)
+    logger.error(f"❌ {error_msg}")
+    raise Exception(error_msg)
 
 # --------------------------- Health Check Endpoint ---------------------------
 
@@ -462,7 +628,7 @@ async def verify_word(
     request_start = time.time()
     logger.info(f"🎯 /verify_word called - target: '{target_word}', threshold: {threshold}, fuzzy: {fuzzy_match}")
 
-    model, processor = _load_word_model_once()
+    model, processor, device = _load_word_model_once()
 
     # Read audio file
     content = await audio.read()
@@ -479,30 +645,17 @@ async def verify_word(
             }
         )
 
+    # Load audio with robust multi-backend fallback
     try:
-        # Save to temp file for librosa to use FFmpeg properly
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as tmp_file:
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
-
-        try:
-            # Use librosa to load audio (supports WAV, MP3, OGG, WebM, FLAC via FFmpeg)
-            y, sr = librosa.load(tmp_path, sr=16000, mono=True)
-            logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
-        finally:
-            # Clean up temp file
-            import os
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
+        y, sr = load_audio_robust(content, sr=16000)
+        logger.info(f"🎵 Audio duration: {len(y)/16000:.2f}s")
     except Exception as e:
-        logger.error(f"❌ Audio loading error: {type(e).__name__}: {e}")
+        logger.error(f"❌ Audio loading failed: {e}")
         return JSONResponse(
             status_code=400,
             content={
                 "result": False,
-                "error": f"Could not read audio file. Error: {type(e).__name__}: {str(e)}"
+                "error": f"Could not read audio file. {str(e)}"
             }
         )
 
@@ -531,6 +684,7 @@ async def verify_word(
         y = y / max_amplitude
 
     # Perform transcription
+    inference_start = time.time()
     try:
         # Process audio
         inputs = processor(
@@ -539,10 +693,20 @@ async def verify_word(
             return_tensors="pt",
             padding=True
         )
-        
-        # Perform inference
-        with torch.no_grad():
-            logits = model(inputs.input_values).logits
+
+        # Move inputs to model device (cached, no repeated parameter access)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # Perform inference with optimizations (mixed precision on GPU)
+        if device.type == "cuda":
+            with torch.no_grad(), torch.cuda.amp.autocast():
+                logits = model(inputs["input_values"]).logits
+        else:
+            with torch.no_grad():
+                logits = model(inputs["input_values"]).logits
+
+        inference_time = (time.time() - inference_start) * 1000
+        logger.debug(f"⚡ Inference: {inference_time:.0f}ms on {device.type.upper()}")
         
         # Decode predictions
         predicted_ids = torch.argmax(logits, dim=-1)
@@ -621,7 +785,7 @@ async def transcribe_word(audio: UploadFile = File(...)):
     request_start = time.time()
     logger.info(f"🎤 /transcribe_word called - filename: {audio.filename}")
 
-    model, processor = _load_word_model_once()
+    model, processor, device = _load_word_model_once()
 
     # Read audio file
     content = await audio.read()
@@ -638,29 +802,16 @@ async def transcribe_word(audio: UploadFile = File(...)):
             }
         )
 
+    # Load audio with robust multi-backend fallback
     try:
-        # Save to temp file for librosa to use FFmpeg properly
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as tmp_file:
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
-
-        try:
-            # Use librosa to load audio (supports WAV, MP3, OGG, WebM, FLAC via FFmpeg)
-            y, sr = librosa.load(tmp_path, sr=16000, mono=True)
-            logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
-        finally:
-            # Clean up temp file
-            import os
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
+        y, sr = load_audio_robust(content, sr=16000)
+        logger.info(f"🎵 Audio duration: {len(y)/16000:.2f}s")
     except Exception as e:
-        logger.error(f"❌ Audio loading error: {type(e).__name__}: {e}")
+        logger.error(f"❌ Audio loading failed: {e}")
         return JSONResponse(
             status_code=400,
             content={
-                "error": f"Could not read audio file. Error: {type(e).__name__}: {str(e)}",
+                "error": f"Could not read audio file. {str(e)}",
                 "transcription": None
             }
         )
@@ -690,9 +841,20 @@ async def transcribe_word(audio: UploadFile = File(...)):
             padding=True
         )
 
-        # Perform inference
-        with torch.no_grad():
-            logits = model(inputs.input_values).logits
+        # Move inputs to model device (cached, no repeated parameter access)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # Perform inference with optimizations (mixed precision on GPU)
+        inference_start = time.perf_counter()
+        if device.type == "cuda":
+            with torch.no_grad(), torch.cuda.amp.autocast():
+                logits = model(inputs["input_values"]).logits
+        else:
+            with torch.no_grad():
+                logits = model(inputs["input_values"]).logits
+
+        inference_time = (time.perf_counter() - inference_start) * 1000
+        logger.debug(f"⚡ Inference: {inference_time:.0f}ms on {device.type.upper()}")
 
         # Decode predictions
         predicted_ids = torch.argmax(logits, dim=-1)
