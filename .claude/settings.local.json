@@ -14,7 +14,21 @@
       "Bash(wordsScriptsactivate)",
       "Bash(pip install:*)",
       "Bash(./words/Scripts/pip install:*)",
-      "Bash(./words/Scripts/python.exe -m pip install:*)"
+      "Bash(./words/Scripts/python.exe -m pip install:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(xargs:*)",
+      "Bash(python -m uvicorn:*)",
+      "Bash(python:*)",
+      "Bash(\"./words/Scripts/python.exe\" -c \"import app; print(''✅ App module imported successfully'')\")",
+      "WebSearch",
+      "Bash(gcloud config set:*)",
+      "Bash(gcloud run deploy:*)",
+      "Bash(gcloud run services list:*)",
+      "Bash(gcloud run services describe:*)",
+      "Bash(gcloud builds:*)",
+      "Bash(tee:*)",
+      "Bash(curl:*)",
+      "Bash(gcloud run services logs read:*)"
     ]
   }
 }

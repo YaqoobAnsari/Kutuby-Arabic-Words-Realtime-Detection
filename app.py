@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Tokenizer
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from core.arabic_utils import normalize_arabic_text
 
 # --------------------------- FastAPI App Setup ---------------------------
@@ -42,25 +42,25 @@ app.add_middleware(
 # --------------------------- Model Loading ---------------------------
 
 _WORD_MODEL: Optional[Wav2Vec2ForCTC] = None
-_WORD_TOKENIZER: Optional[Wav2Vec2Tokenizer] = None
+_WORD_PROCESSOR: Optional[Wav2Vec2Processor] = None
 
 def _load_word_model_once():
     """Load the Arabic word transcription model (Wav2Vec2-Large-XLSR-53-Arabic)"""
-    global _WORD_MODEL, _WORD_TOKENIZER
+    global _WORD_MODEL, _WORD_PROCESSOR
     if _WORD_MODEL is None:
         model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
         print(f"Loading model: {model_name}")
-        _WORD_TOKENIZER = Wav2Vec2Tokenizer.from_pretrained(model_name)
+        _WORD_PROCESSOR = Wav2Vec2Processor.from_pretrained(model_name)
         _WORD_MODEL = Wav2Vec2ForCTC.from_pretrained(model_name)
         _WORD_MODEL.eval()  # Set to evaluation mode
         print("Model loaded successfully!")
-    return _WORD_MODEL, _WORD_TOKENIZER
+    return _WORD_MODEL, _WORD_PROCESSOR
 
-# Load model on startup
-@app.on_event("startup")
-async def startup_event():
-    """Load model when the app starts"""
-    _load_word_model_once()
+# Don't load model on startup - load on first request to avoid timeout
+# @app.on_event("startup")
+# async def startup_event():
+#     """Load model when the app starts"""
+#     _load_word_model_once()
 
 # --------------------------- Health Check Endpoint ---------------------------
 
@@ -69,193 +69,248 @@ async def root():
     """Serve the web UI"""
     return """
     <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
+    <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>🎤 Arabic Word Recognition</title>
+        <title>Arabic Word Recognition</title>
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; }
+
             body {
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', sans-serif;
+                background: linear-gradient(135deg, #f5f7fa 0%, #e8eef3 100%);
                 min-height: 100vh;
                 display: flex;
                 justify-content: center;
                 align-items: center;
                 padding: 20px;
+                color: #2c3e50;
             }
+
             .container {
                 background: white;
-                border-radius: 20px;
-                padding: 40px;
-                max-width: 600px;
+                border-radius: 16px;
+                padding: 48px;
+                max-width: 650px;
                 width: 100%;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                box-shadow: 0 10px 40px rgba(0,0,0,0.08);
             }
+
             h1 {
-                text-align: center;
-                color: #667eea;
-                margin-bottom: 30px;
-                font-size: 2em;
-            }
-            .input-group {
-                margin-bottom: 20px;
-            }
-            label {
-                display: block;
-                margin-bottom: 8px;
-                color: #333;
+                font-size: 28px;
                 font-weight: 600;
+                color: #1a202c;
+                margin-bottom: 8px;
+                text-align: center;
             }
-            input[type="text"] {
-                width: 100%;
-                padding: 12px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                font-size: 16px;
-                transition: border 0.3s;
-                text-align: right;
-                font-family: 'Arial', sans-serif;
+
+            .subtitle {
+                text-align: center;
+                color: #718096;
+                font-size: 14px;
+                margin-bottom: 36px;
             }
-            input[type="text"]:focus {
-                outline: none;
-                border-color: #667eea;
-            }
+
             .controls {
                 display: flex;
-                gap: 10px;
-                margin-bottom: 20px;
+                gap: 12px;
+                margin-bottom: 24px;
             }
+
             button {
                 flex: 1;
-                padding: 15px;
+                padding: 16px 24px;
                 border: none;
-                border-radius: 8px;
-                font-size: 16px;
+                border-radius: 10px;
+                font-size: 15px;
                 font-weight: 600;
                 cursor: pointer;
-                transition: all 0.3s;
+                transition: all 0.2s ease;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
             }
+
             #recordBtn {
-                background: #4CAF50;
+                background: #4a5568;
                 color: white;
             }
-            #recordBtn:hover { background: #45a049; }
-            #recordBtn:disabled { background: #ccc; cursor: not-allowed; }
+            #recordBtn:hover:not(:disabled) {
+                background: #2d3748;
+                transform: translateY(-1px);
+            }
+            #recordBtn:disabled {
+                background: #cbd5e0;
+                cursor: not-allowed;
+                color: #a0aec0;
+            }
 
             #stopBtn {
-                background: #f44336;
-                color: white;
+                background: #e2e8f0;
+                color: #4a5568;
             }
-            #stopBtn:hover { background: #da190b; }
-            #stopBtn:disabled { background: #ccc; cursor: not-allowed; }
+            #stopBtn:hover:not(:disabled) {
+                background: #cbd5e0;
+                transform: translateY(-1px);
+            }
+            #stopBtn:disabled {
+                background: #f7fafc;
+                cursor: not-allowed;
+                color: #cbd5e0;
+            }
 
-            .status {
+            .status-bar {
+                background: #f7fafc;
+                border-radius: 10px;
+                padding: 16px;
+                margin-bottom: 24px;
                 text-align: center;
-                padding: 12px;
-                border-radius: 8px;
-                margin-bottom: 20px;
-                font-weight: 600;
+                font-size: 14px;
+                font-weight: 500;
+                border: 2px solid #e2e8f0;
             }
-            .status.recording { background: #ffebee; color: #c62828; }
-            .status.processing { background: #fff3e0; color: #e65100; }
-            .status.ready { background: #e8f5e9; color: #2e7d32; }
+
+            .status-bar.recording {
+                background: #fef5f5;
+                border-color: #fc8181;
+                color: #c53030;
+            }
+            .status-bar.processing {
+                background: #fffcf5;
+                border-color: #fbd38d;
+                color: #c05621;
+            }
+            .status-bar.ready {
+                background: #f0fff4;
+                border-color: #9ae6b4;
+                color: #2f855a;
+            }
 
             .results {
-                background: #f5f5f5;
-                border-radius: 8px;
-                padding: 20px;
-                margin-top: 20px;
+                background: #f8fafc;
+                border-radius: 12px;
+                padding: 24px;
                 display: none;
             }
             .results.show { display: block; }
 
-            .result-item {
-                margin-bottom: 15px;
-                padding-bottom: 15px;
-                border-bottom: 1px solid #ddd;
+            .result-section {
+                margin-bottom: 24px;
             }
-            .result-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+            .result-section:last-child { margin-bottom: 0; }
 
             .result-label {
-                font-size: 14px;
-                color: #666;
-                margin-bottom: 5px;
-            }
-            .result-value {
-                font-size: 20px;
-                font-weight: 700;
-                color: #333;
-            }
-            .result-value.arabic {
-                font-size: 28px;
-                text-align: right;
-            }
-
-            .match-badge {
-                display: inline-block;
-                padding: 8px 16px;
-                border-radius: 20px;
-                font-size: 16px;
+                font-size: 13px;
                 font-weight: 600;
+                color: #718096;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 8px;
             }
-            .match-badge.success { background: #4CAF50; color: white; }
-            .match-badge.fail { background: #f44336; color: white; }
 
-            .confidence-bar {
-                width: 100%;
-                height: 30px;
-                background: #e0e0e0;
-                border-radius: 15px;
-                overflow: hidden;
-                margin-top: 8px;
+            .result-value {
+                font-size: 24px;
+                font-weight: 600;
+                color: #1a202c;
+                word-break: break-word;
             }
+
+            .confidence-container {
+                position: relative;
+                height: 44px;
+                background: #e2e8f0;
+                border-radius: 10px;
+                overflow: hidden;
+            }
+
             .confidence-fill {
                 height: 100%;
-                background: linear-gradient(90deg, #4CAF50, #8BC34A);
-                transition: width 0.5s ease;
+                background: linear-gradient(90deg, #4a5568 0%, #718096 100%);
+                transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
                 display: flex;
                 align-items: center;
-                justify-content: center;
+                padding: 0 16px;
+            }
+
+            .confidence-text {
                 color: white;
                 font-weight: 600;
+                font-size: 15px;
+            }
+
+            .divider {
+                height: 1px;
+                background: #e2e8f0;
+                margin: 24px 0;
+            }
+
+            .model-info {
+                text-align: center;
+                color: #a0aec0;
+                font-size: 12px;
+                margin-top: 32px;
+                padding-top: 24px;
+                border-top: 1px solid #e2e8f0;
+            }
+
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.5; }
+            }
+
+            .recording-indicator {
+                display: inline-block;
+                width: 8px;
+                height: 8px;
+                background: #fc8181;
+                border-radius: 50%;
+                animation: pulse 1.5s ease-in-out infinite;
+                margin-right: 8px;
             }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🎤 التعرف على الكلمات العربية</h1>
-
-            <div class="input-group">
-                <label for="targetWord">الكلمة المستهدفة (Target Word):</label>
-                <input type="text" id="targetWord" placeholder="اكتب الكلمة بالتشكيل (e.g., اللَّهِ)">
-            </div>
+            <h1>🎤 Arabic Word Recognition</h1>
+            <div class="subtitle">Real-time speech-to-text transcription</div>
 
             <div class="controls">
-                <button id="recordBtn">🎤 ابدأ التسجيل (Record)</button>
-                <button id="stopBtn" disabled>⏹️ إيقاف (Stop)</button>
+                <button id="recordBtn">
+                    <span>⬤</span>
+                    <span>Start Recording</span>
+                </button>
+                <button id="stopBtn" disabled>
+                    <span>⬛</span>
+                    <span>Stop</span>
+                </button>
             </div>
 
-            <div id="status" class="status ready">جاهز للتسجيل (Ready)</div>
+            <div id="statusBar" class="status-bar ready">
+                Ready to record
+            </div>
 
             <div id="results" class="results">
-                <div class="result-item">
-                    <div class="result-label">النص المنسوخ (Transcription):</div>
-                    <div id="transcription" class="result-value arabic">-</div>
+                <div class="result-section">
+                    <div class="result-label">Transcription</div>
+                    <div id="transcription" class="result-value">—</div>
                 </div>
 
-                <div class="result-item">
-                    <div class="result-label">درجة الثقة (Confidence Score):</div>
-                    <div class="confidence-bar">
-                        <div id="confidenceFill" class="confidence-fill" style="width: 0%">0%</div>
+                <div class="divider"></div>
+
+                <div class="result-section">
+                    <div class="result-label">Confidence Score</div>
+                    <div class="confidence-container">
+                        <div id="confidenceFill" class="confidence-fill" style="width: 0%">
+                            <span id="confidenceText" class="confidence-text">0%</span>
+                        </div>
                     </div>
                 </div>
+            </div>
 
-                <div class="result-item">
-                    <div class="result-label">نتيجة التحقق (Verification):</div>
-                    <div id="verification">-</div>
-                </div>
+            <div class="model-info">
+                Powered by Wav2Vec2-Large-XLSR-53-Arabic
             </div>
         </div>
 
@@ -264,9 +319,8 @@ async def root():
             let audioChunks = [];
             const recordBtn = document.getElementById('recordBtn');
             const stopBtn = document.getElementById('stopBtn');
-            const status = document.getElementById('status');
+            const statusBar = document.getElementById('statusBar');
             const results = document.getElementById('results');
-            const targetWordInput = document.getElementById('targetWord');
 
             recordBtn.onclick = async () => {
                 try {
@@ -287,11 +341,11 @@ async def root():
                     mediaRecorder.start();
                     recordBtn.disabled = true;
                     stopBtn.disabled = false;
-                    status.className = 'status recording';
-                    status.textContent = '🔴 جاري التسجيل... (Recording...)';
+                    statusBar.className = 'status-bar recording';
+                    statusBar.innerHTML = '<span class="recording-indicator"></span>Recording...';
                     results.classList.remove('show');
                 } catch (error) {
-                    alert('خطأ في الوصول للميكروفون (Microphone access error): ' + error.message);
+                    alert('Microphone access error: ' + error.message);
                 }
             };
 
@@ -300,29 +354,17 @@ async def root():
                     mediaRecorder.stop();
                     recordBtn.disabled = false;
                     stopBtn.disabled = true;
-                    status.className = 'status processing';
-                    status.textContent = '⏳ جاري المعالجة... (Processing...)';
+                    statusBar.className = 'status-bar processing';
+                    statusBar.textContent = 'Processing audio...';
                 }
             };
 
             async function processAudio(audioBlob) {
-                const targetWord = targetWordInput.value.trim();
-
-                if (!targetWord) {
-                    alert('الرجاء إدخال الكلمة المستهدفة (Please enter target word)');
-                    status.className = 'status ready';
-                    status.textContent = 'جاهز للتسجيل (Ready)';
-                    return;
-                }
-
                 const formData = new FormData();
                 formData.append('audio', audioBlob, 'recording.wav');
-                formData.append('target_word', targetWord);
-                formData.append('threshold', '0.6');
 
                 try {
-                    // Call verify_word endpoint
-                    const response = await fetch('/verify_word', {
+                    const response = await fetch('/transcribe_word', {
                         method: 'POST',
                         body: formData
                     });
@@ -333,39 +375,21 @@ async def root():
 
                     const data = await response.json();
 
-                    // Also get detailed transcription with confidence
-                    const formData2 = new FormData();
-                    formData2.append('audio', audioBlob, 'recording.wav');
-
-                    const transcribeResponse = await fetch('/transcribe_word', {
-                        method: 'POST',
-                        body: formData2
-                    });
-
-                    const transcribeData = await transcribeResponse.json();
-
                     // Display results
-                    document.getElementById('transcription').textContent = transcribeData.transcription || 'N/A';
+                    document.getElementById('transcription').textContent = data.transcription || 'No transcription';
 
-                    const confidence = Math.round((transcribeData.confidence || 0) * 100);
+                    const confidence = Math.round(data.confidence || 0);
                     document.getElementById('confidenceFill').style.width = confidence + '%';
-                    document.getElementById('confidenceFill').textContent = confidence + '%';
-
-                    const verificationDiv = document.getElementById('verification');
-                    if (data.result) {
-                        verificationDiv.innerHTML = '<span class="match-badge success">✅ تطابق (Match)</span>';
-                    } else {
-                        verificationDiv.innerHTML = '<span class="match-badge fail">❌ لا تطابق (No Match)</span>';
-                    }
+                    document.getElementById('confidenceText').textContent = confidence + '%';
 
                     results.classList.add('show');
-                    status.className = 'status ready';
-                    status.textContent = '✅ اكتمل! (Complete!)';
+                    statusBar.className = 'status-bar ready';
+                    statusBar.textContent = 'Ready to record';
 
                 } catch (error) {
-                    alert('خطأ: ' + error.message);
-                    status.className = 'status ready';
-                    status.textContent = 'جاهز للتسجيل (Ready)';
+                    alert('Error: ' + error.message);
+                    statusBar.className = 'status-bar ready';
+                    statusBar.textContent = 'Ready to record';
                 }
             }
         </script>
@@ -402,8 +426,8 @@ async def verify_word(
     - result: Boolean (True if match AND confidence >= threshold, False otherwise)
     - similarity: Fuzzy match similarity score (0-100, only if fuzzy_match=True)
     """
-    model, tokenizer = _load_word_model_once()
-    
+    model, processor = _load_word_model_once()
+
     # Read audio file
     content = await audio.read()
     try:
@@ -417,7 +441,7 @@ async def verify_word(
                 "error": f"Could not read audio file. Expected WAV format. Error: {type(e).__name__}: {e}"
             }
         )
-    
+
     if len(y) == 0:
         return JSONResponse(
             status_code=400,
@@ -426,7 +450,7 @@ async def verify_word(
                 "error": "Empty audio file"
             }
         )
-    
+
     # Validate threshold
     if not 0.0 <= threshold <= 1.0:
         return JSONResponse(
@@ -436,16 +460,16 @@ async def verify_word(
                 "error": "Threshold must be between 0.0 and 1.0"
             }
         )
-    
+
     # Normalize audio amplitude
     max_amplitude = max(abs(y))
     if max_amplitude > 0:
         y = y / max_amplitude
-    
+
     # Perform transcription
     try:
-        # Tokenize audio
-        inputs = tokenizer(
+        # Process audio
+        inputs = processor(
             y,
             sampling_rate=16000,
             return_tensors="pt",
@@ -458,7 +482,7 @@ async def verify_word(
         
         # Decode predictions
         predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = tokenizer.batch_decode(predicted_ids)[0].strip()
+        transcription = processor.batch_decode(predicted_ids)[0].strip()
         
         # Calculate confidence score
         probabilities = torch.softmax(logits, dim=-1)
@@ -519,8 +543,8 @@ async def transcribe_word(audio: UploadFile = File(...)):
     - confidence: Confidence score (if available)
     - latency_ms: Processing time in milliseconds
     """
-    model, tokenizer = _load_word_model_once()
-    
+    model, processor = _load_word_model_once()
+
     # Read audio file
     content = await audio.read()
     try:
@@ -534,7 +558,7 @@ async def transcribe_word(audio: UploadFile = File(...)):
                 "transcription": None
             }
         )
-    
+
     if len(y) == 0:
         return JSONResponse(
             status_code=400,
@@ -543,30 +567,30 @@ async def transcribe_word(audio: UploadFile = File(...)):
                 "transcription": None
             }
         )
-    
+
     # Normalize audio amplitude (same as Streamlit app)
     max_amplitude = max(abs(y))
     if max_amplitude > 0:
         y = y / max_amplitude
-    
+
     # Perform transcription
     t0 = time.perf_counter()
     try:
-        # Tokenize audio
-        inputs = tokenizer(
+        # Process audio
+        inputs = processor(
             y,
             sampling_rate=16000,
             return_tensors="pt",
             padding=True
         )
-        
+
         # Perform inference
         with torch.no_grad():
             logits = model(inputs.input_values).logits
-        
+
         # Decode predictions
         predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = tokenizer.batch_decode(predicted_ids)[0]
+        transcription = processor.batch_decode(predicted_ids)[0]
         
         # Calculate confidence score
         probabilities = torch.softmax(logits, dim=-1)

@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY app.py .
 COPY core/ ./core/
 
-# Expose port for HuggingFace Spaces
-EXPOSE 7860
+# Expose port for Cloud Run (8080)
+EXPOSE 8080
 
-# Run FastAPI with uvicorn
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+# Run FastAPI with uvicorn - Cloud Run injects PORT env variable
+CMD exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080}
