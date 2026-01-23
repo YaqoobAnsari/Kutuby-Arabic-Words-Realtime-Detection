@@ -480,9 +480,22 @@ async def verify_word(
         )
 
     try:
-        # Use librosa to load audio (supports WAV, MP3, OGG, FLAC, etc.)
-        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
-        logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
+        # Save to temp file for librosa to use FFmpeg properly
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as tmp_file:
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+
+        try:
+            # Use librosa to load audio (supports WAV, MP3, OGG, WebM, FLAC via FFmpeg)
+            y, sr = librosa.load(tmp_path, sr=16000, mono=True)
+            logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
+        finally:
+            # Clean up temp file
+            import os
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     except Exception as e:
         logger.error(f"❌ Audio loading error: {type(e).__name__}: {e}")
         return JSONResponse(
@@ -626,9 +639,22 @@ async def transcribe_word(audio: UploadFile = File(...)):
         )
 
     try:
-        # Use librosa to load audio (supports WAV, MP3, OGG, FLAC, etc.)
-        y, sr = librosa.load(io.BytesIO(content), sr=16000, mono=True)
-        logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
+        # Save to temp file for librosa to use FFmpeg properly
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as tmp_file:
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+
+        try:
+            # Use librosa to load audio (supports WAV, MP3, OGG, WebM, FLAC via FFmpeg)
+            y, sr = librosa.load(tmp_path, sr=16000, mono=True)
+            logger.info(f"🎵 Audio loaded: {len(y)} samples, {len(y)/16000:.2f}s duration")
+        finally:
+            # Clean up temp file
+            import os
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     except Exception as e:
         logger.error(f"❌ Audio loading error: {type(e).__name__}: {e}")
         return JSONResponse(
