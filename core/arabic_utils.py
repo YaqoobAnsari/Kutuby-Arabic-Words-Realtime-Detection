@@ -40,6 +40,91 @@ HAMZA_FORMS = {
 # Tatweel (text stretching character)
 TATWEEL = 'ـ'  # U+0640
 
+# Common Arabic endings that are phonetically weak/silent
+# The model often struggles with these - they're barely audible
+WEAK_ENDINGS = {
+    'ة': 'ه',   # Taa marbuta → often sounds like light 'h' or is silent
+    'ه': '',    # Final haa → sometimes dropped
+    'ا': '',    # Final alef → elongation, sometimes dropped
+    'ى': '',    # Alef maqsura → similar to alef
+}
+
+# Equivalent final characters (sound similar)
+EQUIVALENT_ENDINGS = [
+    ('ة', 'ه'),   # Taa marbuta ≈ Haa (both sound like 'h')
+    ('ة', ''),    # Taa marbuta ≈ nothing (often silent)
+    ('ه', ''),    # Final haa ≈ nothing
+    ('ا', 'ى'),   # Alef ≈ Alef maqsura
+    ('ي', 'ى'),   # Yaa ≈ Alef maqsura
+]
+
+
+def check_weak_ending_match(transcription: str, target: str) -> tuple[bool, str]:
+    """
+    Check if transcription matches target when accounting for weak Arabic endings.
+
+    The model often drops or misrecognizes weak endings like:
+    - ة (taa marbuta) - often silent or sounds like 'h'
+    - ه (final haa) - sometimes dropped
+    - ا (final alef) - elongation, sometimes dropped
+    - ى (alef maqsura) - similar to alef
+
+    Args:
+        transcription: Normalized transcribed text
+        target: Normalized target text
+
+    Returns:
+        Tuple of (matches: bool, reason: str)
+        - matches: True if they match considering weak endings
+        - reason: Description of why it matched (for debugging)
+
+    Examples:
+        >>> check_weak_ending_match("بقر", "بقرة")
+        (True, "target ends with weak ة, transcription matches without it")
+        >>> check_weak_ending_match("الله", "الله")
+        (True, "exact match")
+        >>> check_weak_ending_match("من", "في")
+        (False, "no weak ending match")
+    """
+    # Already exact match
+    if transcription == target:
+        return (True, "exact match")
+
+    # Case 1: Target has weak ending that transcription is missing
+    # E.g., target="بقرة", transcription="بقر"
+    for weak_char, replacement in WEAK_ENDINGS.items():
+        if target.endswith(weak_char):
+            # Check if transcription matches target without the weak ending
+            target_without_ending = target[:-1]
+            if transcription == target_without_ending:
+                return (True, f"target ends with weak {weak_char}, transcription matches without it")
+
+            # Check if transcription matches target with replacement
+            if replacement and transcription == target_without_ending + replacement:
+                return (True, f"target ends with {weak_char}, transcription has equivalent {replacement}")
+
+    # Case 2: Check equivalent endings
+    # E.g., target="مرحبى", transcription="مرحبا"
+    for char1, char2 in EQUIVALENT_ENDINGS:
+        # Target ends with char1, transcription ends with char2
+        if target.endswith(char1) and transcription.endswith(char2):
+            if target[:-1] == transcription[:-1]:
+                return (True, f"equivalent endings: {char1} ≈ {char2}")
+        # Or vice versa
+        if char2 and target.endswith(char2) and transcription.endswith(char1):
+            if target[:-1] == transcription[:-1]:
+                return (True, f"equivalent endings: {char2} ≈ {char1}")
+
+    # Case 3: Transcription has extra weak ending (model hallucinated)
+    # E.g., target="بقر", transcription="بقرة" (less common but possible)
+    for weak_char in WEAK_ENDINGS.keys():
+        if transcription.endswith(weak_char):
+            trans_without_ending = transcription[:-1]
+            if trans_without_ending == target:
+                return (True, f"transcription has extra weak {weak_char}")
+
+    return (False, "no weak ending match")
+
 
 def normalize_arabic_text(text: str) -> str:
     """
@@ -168,6 +253,7 @@ def fuzzy_match_arabic_words(
 
     Uses RapidFuzz (if available) or difflib for fuzzy string matching.
     Automatically normalizes both inputs before comparison.
+    Also checks for Arabic-specific weak ending matches (ة, ه, etc.)
 
     Args:
         transcription: Transcribed Arabic text from audio
@@ -184,6 +270,8 @@ def fuzzy_match_arabic_words(
         (True, 100.0)
         >>> fuzzy_match_arabic_words("اللة", "الله")
         (True, 87.5)  # 1-char difference in 4-char word, passes 85% threshold
+        >>> fuzzy_match_arabic_words("بقر", "بقرة")
+        (True, 95.0)  # Weak ending match - ة is often silent
         >>> fuzzy_match_arabic_words("من", "في")
         (False, 0.0)  # Completely different short words
     """
@@ -198,6 +286,14 @@ def fuzzy_match_arabic_words(
     # Fast-path: Check for exact match first
     if norm_trans == norm_target:
         return (True, 100.0)
+
+    # Arabic-aware weak ending check
+    # This handles cases like بقر vs بقرة where ة is often silent
+    weak_match, reason = check_weak_ending_match(norm_trans, norm_target)
+    if weak_match:
+        # Give high score (95%) for weak ending matches
+        # This is intentionally high because the core word matches perfectly
+        return (True, 95.0)
 
     # LENGTH CHECK: Reject if transcription is too short compared to target
     # This prevents "baqr" from matching "baqarah" (missing word endings)
