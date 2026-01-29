@@ -139,20 +139,23 @@ def get_dynamic_threshold(word_length: int) -> float:
 
     Examples:
         >>> get_dynamic_threshold(2)
-        95.0
+        98.0
         >>> get_dynamic_threshold(4)
-        85.0
+        90.0
         >>> get_dynamic_threshold(10)
-        75.0
+        80.0
     """
+    # INCREASED THRESHOLDS - Previous values were too loose
     if word_length <= 2:
-        return 95.0  # Very strict for short words (1-2 chars)
+        return 98.0  # Nearly exact for very short words (1-2 chars)
     elif word_length <= 4:
-        return 85.0  # High threshold for short words (3-4 chars)
-    elif word_length <= 8:
-        return 80.0  # Moderate threshold for medium words (5-8 chars)
+        return 90.0  # Very strict for short words (3-4 chars)
+    elif word_length <= 6:
+        return 85.0  # High threshold for medium-short words (5-6 chars)
+    elif word_length <= 10:
+        return 80.0  # Moderate threshold for medium words (7-10 chars)
     else:
-        return 75.0  # More lenient for long words (9+ chars)
+        return 75.0  # Slightly lenient for long words (11+ chars)
 
 
 def fuzzy_match_arabic_words(
@@ -196,14 +199,30 @@ def fuzzy_match_arabic_words(
     if norm_trans == norm_target:
         return (True, 100.0)
 
+    # LENGTH CHECK: Reject if transcription is too short compared to target
+    # This prevents "baqr" from matching "baqarah" (missing word endings)
+    len_trans = len(norm_trans)
+    len_target = len(norm_target)
+
+    if len_target > 0:
+        length_ratio = len_trans / len_target
+        # Reject if transcription is less than 70% of target length
+        # E.g., "بقر" (3) vs "بقرة" (4) = 75% - borderline
+        # E.g., "بق" (2) vs "بقرة" (4) = 50% - REJECTED
+        if length_ratio < 0.70:
+            return (False, round(length_ratio * 50, 2))  # Return low score indicating length mismatch
+
+        # Also reject if transcription is much LONGER than target (wrong word entirely)
+        if length_ratio > 1.5:
+            return (False, round(50 / length_ratio, 2))
+
     # Calculate similarity based on available backend
     if FUZZY_BACKEND == "rapidfuzz":
-        # Use RapidFuzz (preferred - faster and more accurate)
-        similarity = fuzz.ratio(norm_trans, norm_target)
-        # Also try partial_ratio for insertions/deletions
-        partial_sim = fuzz.partial_ratio(norm_trans, norm_target)
-        # Take maximum of both metrics
-        similarity_score = max(similarity, partial_sim)
+        # Use fuzz.ratio() ONLY - NOT partial_ratio()
+        # partial_ratio() returns 100% for substrings which is WRONG for word matching
+        # E.g., partial_ratio("baqr", "baqarah") = 100% (INCORRECT!)
+        # E.g., fuzz.ratio("baqr", "baqarah") = 60% (CORRECT!)
+        similarity_score = fuzz.ratio(norm_trans, norm_target)
     else:
         # Fallback to difflib
         similarity = difflib.SequenceMatcher(None, norm_trans, norm_target).ratio()
@@ -213,7 +232,7 @@ def fuzzy_match_arabic_words(
     if custom_threshold is not None:
         threshold = float(custom_threshold)
     else:
-        threshold = get_dynamic_threshold(len(norm_target))
+        threshold = get_dynamic_threshold(len_target)
 
     # Check if similarity meets threshold
     matches = similarity_score >= threshold
