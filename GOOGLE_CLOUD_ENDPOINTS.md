@@ -3,7 +3,7 @@
 ## 🎯 Service URLs
 
 ### Arabic Words API
-**Base URL**: `https://arabic-words-api-d26k2plh4q-ew.a.run.app`
+**Base URL**: `https://arabic-words-api-621075448606.europe-west1.run.app`
 **Status**: ✅ Running on Google Cloud Run (europe-west1)
 **Memory**: 5Gi
 **CPU**: 2 vCPU
@@ -20,12 +20,12 @@
 
 ### 1. Health Check
 **Endpoint**: `GET /health`
-**URL**: https://arabic-words-api-d26k2plh4q-ew.a.run.app/health
+**URL**: https://arabic-words-api-621075448606.europe-west1.run.app/health
 
 **Postman Setup**:
 ```
 Method: GET
-URL: https://arabic-words-api-d26k2plh4q-ew.a.run.app/health
+URL: https://arabic-words-api-621075448606.europe-west1.run.app/health
 Headers: None required
 Body: None
 ```
@@ -41,19 +41,19 @@ Body: None
 
 **cURL Test**:
 ```bash
-curl https://arabic-words-api-d26k2plh4q-ew.a.run.app/health
+curl https://arabic-words-api-621075448606.europe-west1.run.app/health
 ```
 
 ---
 
 ### 2. Transcribe Word
 **Endpoint**: `POST /transcribe_word`
-**URL**: https://arabic-words-api-d26k2plh4q-ew.a.run.app/transcribe_word
+**URL**: https://arabic-words-api-621075448606.europe-west1.run.app/transcribe_word
 
 **Postman Setup**:
 ```
 Method: POST
-URL: https://arabic-words-api-d26k2plh4q-ew.a.run.app/transcribe_word
+URL: https://arabic-words-api-621075448606.europe-west1.run.app/transcribe_word
 Headers:
   - Content-Type: multipart/form-data (auto-set by Postman)
 Body:
@@ -75,7 +75,7 @@ Body:
 
 **cURL Test**:
 ```bash
-curl -X POST https://arabic-words-api-d26k2plh4q-ew.a.run.app/transcribe_word \
+curl -X POST https://arabic-words-api-621075448606.europe-west1.run.app/transcribe_word \
   -F "audio=@your_audio.wav"
 ```
 
@@ -90,12 +90,12 @@ curl -X POST https://arabic-words-api-d26k2plh4q-ew.a.run.app/transcribe_word \
 
 ### 3. Verify Word
 **Endpoint**: `POST /verify_word`
-**URL**: https://arabic-words-api-d26k2plh4q-ew.a.run.app/verify_word
+**URL**: https://arabic-words-api-621075448606.europe-west1.run.app/verify_word
 
 **Postman Setup**:
 ```
 Method: POST
-URL: https://arabic-words-api-d26k2plh4q-ew.a.run.app/verify_word
+URL: https://arabic-words-api-621075448606.europe-west1.run.app/verify_word
 Headers:
   - Content-Type: multipart/form-data (auto-set by Postman)
 Body:
@@ -122,7 +122,7 @@ Body:
 
 **cURL Test**:
 ```bash
-curl -X POST https://arabic-words-api-d26k2plh4q-ew.a.run.app/verify_word \
+curl -X POST https://arabic-words-api-621075448606.europe-west1.run.app/verify_word \
   -F "audio=@your_audio.wav" \
   -F "target_word=مرحبا" \
   -F "threshold=0.6" \
@@ -253,14 +253,14 @@ curl -X POST https://arabic-letters-api-d26k2plh4q-ew.a.run.app/transcribe_lette
 #### Test 1: Health Checks
 1. Create new request in Postman
 2. Set method to `GET`
-3. URL: `https://arabic-words-api-d26k2plh4q-ew.a.run.app/health`
+3. URL: `https://arabic-words-api-621075448606.europe-west1.run.app/health`
 4. Click "Send"
 5. Should get `{"status":"healthy",...}`
 
 #### Test 2: Transcribe Word (No Audio File Needed)
 1. Create new request
 2. Set method to `POST`
-3. URL: `https://arabic-words-api-d26k2plh4q-ew.a.run.app/transcribe_word`
+3. URL: `https://arabic-words-api-621075448606.europe-west1.run.app/transcribe_word`
 4. Go to "Body" tab
 5. Select "form-data"
 6. Add key: `audio`
@@ -283,7 +283,7 @@ curl -X POST https://arabic-letters-api-d26k2plh4q-ew.a.run.app/transcribe_lette
 ## 🎨 Web UI Access
 
 ### Arabic Words API Web Interface
-**URL**: https://arabic-words-api-d26k2plh4q-ew.a.run.app/
+**URL**: https://arabic-words-api-621075448606.europe-west1.run.app/
 
 Open in browser to access the interactive web UI with:
 - Microphone recording
@@ -348,7 +348,7 @@ You can import this JSON into Postman:
           "request": {
             "method": "GET",
             "header": [],
-            "url": "https://arabic-words-api-d26k2plh4q-ew.a.run.app/health"
+            "url": "https://arabic-words-api-621075448606.europe-west1.run.app/health"
           }
         },
         {
@@ -366,7 +366,7 @@ You can import this JSON into Postman:
                 }
               ]
             },
-            "url": "https://arabic-words-api-d26k2plh4q-ew.a.run.app/transcribe_word"
+            "url": "https://arabic-words-api-621075448606.europe-west1.run.app/transcribe_word"
           }
         },
         {
@@ -399,7 +399,7 @@ You can import this JSON into Postman:
                 }
               ]
             },
-            "url": "https://arabic-words-api-d26k2plh4q-ew.a.run.app/verify_word"
+            "url": "https://arabic-words-api-621075448606.europe-west1.run.app/verify_word"
           }
         }
       ]
@@ -467,7 +467,7 @@ You can import this JSON into Postman:
 ## ✅ Summary
 
 ### Arabic Words API
-✅ **Base URL**: `https://arabic-words-api-d26k2plh4q-ew.a.run.app`
+✅ **Base URL**: `https://arabic-words-api-621075448606.europe-west1.run.app`
 ✅ **Health**: `/health`
 ✅ **Transcribe**: `POST /transcribe_word`
 ✅ **Verify**: `POST /verify_word`
