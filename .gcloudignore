@@ -1,0 +1,46 @@
+# Files NOT uploaded to Cloud Build by `gcloud run deploy --source .`
+# Keep this lean: only `app.py`, `core/`, `data/`, `requirements.txt`, `Dockerfile`
+# are actually needed by the container.
+
+# Python virtualenv — biggest culprit, several GB of installed packages
+words/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Git metadata
+.git/
+.gitignore
+.gitattributes
+
+# IDE / editor / Claude Code state
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dev-only scripts and dependencies (lexicon + spike are one-time, not used at runtime)
+scripts/
+tests/
+requirements-dev.txt
+setup.bat
+setup.sh
+
+# Legacy Streamlit-era code (NOT imported by app.py — see project_stale_code memory)
+arabic_word_identifier.py
+
+# Hugging Face Spaces-only system-package file (Docker uses its own apt-get RUN step)
+packages.txt
+
+# Logs and analysis artifacts
+pronunciation_analysis_log.csv
+*.log
+
+# Markdown docs (not needed at runtime — keep README/upgrade.md? skip, runtime doesn't need them)
+*.md
+LICENSE
+
+# OS noise
+.DS_Store
+Thumbs.db

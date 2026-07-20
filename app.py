@@ -14,14 +14,12 @@ from datetime import datetime
 
 import numpy as np
 import librosa
-import torch
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-from core.arabic_utils import normalize_arabic_text
+from core.inference import get_backend
 
 # Configure logging
 logging.basicConfig(
@@ -34,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Arabic Word Recognition API",
-    description="API for transcribing Arabic words from audio using Wav2Vec2-Large-XLSR-53-Arabic",
+    description="API for verifying Arabic Quranic word pronunciation. Backend selected via MODEL_VARIANT env var.",
     version="2.0.0"
 )
 
@@ -47,68 +45,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --------------------------- Model Loading ---------------------------
+# --------------------------- Backend Loading ---------------------------
 
-_WORD_MODEL: Optional[Wav2Vec2ForCTC] = None
-_WORD_PROCESSOR: Optional[Wav2Vec2Processor] = None
-_MODEL_DEVICE = None  # Cache device to avoid repeated checks
-
-def _load_word_model_once():
-    """Load the Arabic word transcription model (Wav2Vec2-Large-XLSR-53-Arabic)"""
-    global _WORD_MODEL, _WORD_PROCESSOR, _MODEL_DEVICE
-    if _WORD_MODEL is None:
-        model_name = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
-        logger.info(f"🔄 Loading model: {model_name}")
-        start_time = time.time()
-
-        # Load processor and model
-        _WORD_PROCESSOR = Wav2Vec2Processor.from_pretrained(model_name)
-        _WORD_MODEL = Wav2Vec2ForCTC.from_pretrained(model_name)
-
-        # Check for GPU and move model if available
-        _MODEL_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        _WORD_MODEL = _WORD_MODEL.to(_MODEL_DEVICE)
-        _WORD_MODEL.eval()  # Set to evaluation mode
-
-        # Enable torch compile for faster inference (PyTorch 2.0+)
-        if hasattr(torch, 'compile') and _MODEL_DEVICE.type == "cuda":
-            try:
-                logger.info("🚀 Compiling model with torch.compile for faster inference")
-                _WORD_MODEL = torch.compile(_WORD_MODEL, mode="reduce-overhead")
-            except Exception as e:
-                logger.warning(f"⚠️ torch.compile failed, using standard model: {e}")
-
-        load_time = time.time() - start_time
-        gpu_info = f" (GPU: {torch.cuda.get_device_name(0)})" if _MODEL_DEVICE.type == "cuda" else ""
-        logger.info(f"✅ Model loaded on {_MODEL_DEVICE.type.upper()}{gpu_info} in {load_time:.2f}s")
-
-        # Warm up model with dummy input (eliminates first-request slowness)
-        try:
-            logger.info("🔥 Warming up model with dummy inference...")
-            dummy_audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
-            dummy_inputs = _WORD_PROCESSOR(dummy_audio, sampling_rate=16000, return_tensors="pt", padding=True)
-            dummy_inputs = {k: v.to(_MODEL_DEVICE) for k, v in dummy_inputs.items()}
-
-            with torch.no_grad():
-                if _MODEL_DEVICE.type == "cuda":
-                    with torch.cuda.amp.autocast():
-                        _ = _WORD_MODEL(dummy_inputs["input_values"]).logits
-                else:
-                    _ = _WORD_MODEL(dummy_inputs["input_values"]).logits
-
-            logger.info("✅ Model warmed up and ready")
-        except Exception as e:
-            logger.warning(f"⚠️ Model warmup failed (non-critical): {e}")
-
-    return _WORD_MODEL, _WORD_PROCESSOR, _MODEL_DEVICE
-
-# Load model on startup for HuggingFace Space (has enough time during build)
 @app.on_event("startup")
 async def startup_event():
-    """Load model when the app starts"""
+    """Load the configured inference backend (Tarteel by default, legacy via MODEL_VARIANT=legacy)."""
     logger.info("🚀 Application startup initiated")
-    _load_word_model_once()
-    logger.info("✅ Application ready to serve requests")
+    backend = get_backend()
+    logger.info(f"✅ Application ready (backend variant={backend.variant})")
 
 # --------------------------- Audio Loading with Multiple Backends ---------------------------
 
@@ -495,7 +439,7 @@ async def root():
             </div>
 
             <div class="model-info">
-                Powered by Wav2Vec2-Large-XLSR-53-Arabic
+                Powered by Tarteel Whisper Quranic ASR
             </div>
         </div>
 
@@ -592,14 +536,24 @@ async def root():
 
 @app.get("/health")
 def health():
-    """Health check endpoint"""
+    """Health check endpoint — also reveals the active backend variant for prod verification."""
     logger.info("🏥 Health check requested")
-    model_loaded = _WORD_MODEL is not None and _WORD_PROCESSOR is not None
-    return {
-        "status": "healthy" if model_loaded else "loading",
-        "model_loaded": model_loaded,
-        "timestamp": datetime.now().isoformat()
-    }
+    try:
+        backend = get_backend()
+        return {
+            "status": "healthy",
+            "model_loaded": True,
+            "variant": backend.variant,
+            "model_name": backend.model_name,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        return {
+            "status": "loading",
+            "model_loaded": False,
+            "error": f"{type(e).__name__}: {e}",
+            "timestamp": datetime.now().isoformat(),
+        }
 
 # --------------------------- Arabic Word Transcription Endpoint ---------------------------
 
@@ -628,144 +582,106 @@ async def verify_word(
     request_start = time.time()
     logger.info(f"🎯 /verify_word called - target: '{target_word}', threshold: {threshold}, fuzzy: {fuzzy_match}")
 
-    model, processor, device = _load_word_model_once()
+    backend = get_backend()
 
-    # Read audio file
+    # Read audio
     content = await audio.read()
     logger.info(f"📁 Audio file received: {len(content)} bytes, filename: {audio.filename}")
+    if not content:
+        return JSONResponse(status_code=400, content={"result": False, "error": "No audio data received"})
 
-    # Check if content is empty
-    if not content or len(content) == 0:
-        logger.error("❌ No audio data received")
-        return JSONResponse(
-            status_code=400,
-            content={
-                "result": False,
-                "error": "No audio data received"
-            }
-        )
-
-    # Load audio with robust multi-backend fallback
+    # Decode with the existing FFmpeg-pipe path
     try:
         y, sr = load_audio_robust(content, sr=16000)
         logger.info(f"🎵 Audio duration: {len(y)/16000:.2f}s")
     except Exception as e:
         logger.error(f"❌ Audio loading failed: {e}")
-        return JSONResponse(
-            status_code=400,
-            content={
-                "result": False,
-                "error": f"Could not read audio file. {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=400, content={"result": False, "error": f"Could not read audio file. {str(e)}"})
 
     if len(y) == 0:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "result": False,
-                "error": "Empty audio file"
-            }
-        )
+        return JSONResponse(status_code=400, content={"result": False, "error": "Empty audio file"})
 
-    # Validate threshold
     if not 0.0 <= threshold <= 1.0:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "result": False,
-                "error": "Threshold must be between 0.0 and 1.0"
-            }
-        )
+        return JSONResponse(status_code=400, content={"result": False, "error": "Threshold must be between 0.0 and 1.0"})
 
-    # Normalize audio amplitude
-    max_amplitude = max(abs(y))
-    if max_amplitude > 0:
-        y = y / max_amplitude
-
-    # Perform transcription
-    inference_start = time.time()
-    try:
-        # Process audio
-        inputs = processor(
-            y,
-            sampling_rate=16000,
-            return_tensors="pt",
-            padding=True
-        )
-
-        # Move inputs to model device (cached, no repeated parameter access)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        # Perform inference with optimizations (mixed precision on GPU)
-        if device.type == "cuda":
-            with torch.no_grad(), torch.cuda.amp.autocast():
-                logits = model(inputs["input_values"]).logits
-        else:
-            with torch.no_grad():
-                logits = model(inputs["input_values"]).logits
-
-        inference_time = (time.time() - inference_start) * 1000
-        logger.debug(f"⚡ Inference: {inference_time:.0f}ms on {device.type.upper()}")
-        
-        # Decode predictions
-        predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = processor.batch_decode(predicted_ids)[0].strip()
-        
-        # Calculate confidence score
-        probabilities = torch.softmax(logits, dim=-1)
-        max_probs = torch.max(probabilities, dim=-1).values
-        confidence = torch.mean(max_probs).item()  # 0.0 to 1.0
-        
-        # Perform word matching (exact or fuzzy based on fuzzy_match parameter)
-        if fuzzy_match:
-            # Import fuzzy matching function
-            from core.arabic_utils import fuzzy_match_arabic_words
-
-            # Use fuzzy matching with dynamic threshold
-            matches, similarity_score = fuzzy_match_arabic_words(
-                transcription=transcription,
-                target=target_word.strip(),
-                custom_threshold=fuzzy_threshold
-            )
-        else:
-            # Exact match (backward compatibility)
-            from core.arabic_utils import normalize_arabic_text
-            normalized_transcription = normalize_arabic_text(transcription)
-            normalized_target = normalize_arabic_text(target_word.strip())
-            matches = normalized_transcription == normalized_target
-            similarity_score = 100.0 if matches else 0.0
-
-        # Check if confidence exceeds threshold
-        exceeds_threshold = confidence >= threshold
-
-        # Final result: both conditions must be true
-        result = matches and exceeds_threshold
-
-        # Calculate processing time
-        processing_time = (time.time() - request_start) * 1000
-
-        logger.info(f"✅ Transcription: '{transcription}' | Confidence: {confidence*100:.1f}% | Similarity: {similarity_score:.1f}% | Match: {matches} | Result: {result} | Time: {processing_time:.0f}ms")
-
-        # Return result with all details
+    # Silence gate — a constrained-decode backend is FORCED to emit a Quranic
+    # word, so silence and noise sneak past the score threshold. Reject inputs
+    # with peak amplitude below 0.005 (well below normal speech ~0.1+).
+    raw_max_amplitude = float(max(abs(y)))
+    if raw_max_amplitude < 0.005:
+        logger.info(f"🔇 Silence/near-silence rejected (peak amplitude {raw_max_amplitude:.5f})")
         return JSONResponse({
-            "result": result,
-            "transcription": transcription,
+            "result": False,
+            "transcription": "",
             "target_word": target_word.strip(),
-            "similarity": round(similarity_score, 2),
-            "confidence": round(confidence * 100, 2),
-            "threshold": threshold * 100,
-            "processing_time_ms": round(processing_time, 2)
+            "similarity": 0.0,
+            "confidence": 0.0,
+            "threshold": round(threshold * 100, 2),
+            "processing_time_ms": round((time.time() - request_start) * 1000, 2),
+            "latency_ms": 0.0,
+            "score": None,
+            "top_k_candidates": None,
+            "variant": backend.variant,
+            "model": backend.model_name,
+            "rejection_reason": "audio_silent",
         })
+
+    # Normalize after the silence gate so silence ÷ tiny == garbage doesn't slip past
+    y = y / raw_max_amplitude
+
+    # Dispatch to the active backend
+    try:
+        if backend.variant == "legacy":
+            backend_result = backend.verify(
+                y, target_word,
+                fuzzy_match=fuzzy_match,
+                fuzzy_threshold=fuzzy_threshold,
+            )
+        elif backend.variant == "fastconformer":
+            # Closed-set exact-match verification. The client's threshold/fuzzy
+            # params are intentionally not honored (no fuzzy matching).
+            backend_result = backend.verify(y, target_word)
+        else:
+            # top_k=1 = greedy beam (fastest); legacy clients still see top_k_candidates as a 1-item list.
+            backend_result = backend.verify(y, target_word, top_k=1)
+
+        processing_time_ms = (time.time() - request_start) * 1000
+
+        # Backward-compatible response shape + new additive fields.
+        # Honesty fields (additive, non-breaking): make explicit HOW `result` was
+        # actually decided. In the tarteel path the client's `threshold` and
+        # `fuzzy_threshold` params are NOT used — the gate is exact lexicon match
+        # + an internal log-prob score. `threshold` is kept only for back-compat
+        # with existing clients so the response shape never shrinks.
+        response = {
+            "result": backend_result["result"],
+            "transcription": backend_result["transcription"],
+            "target_word": backend_result["target_word"],
+            "similarity": backend_result["similarity"],
+            "confidence": backend_result["confidence"],
+            # Kept for back-compat; in tarteel mode this is NOT the gate (see decision_* below).
+            "threshold": round(threshold * 100, 2),
+            "decision_basis": (
+                "fuzzy_string_match+confidence" if backend.variant == "legacy"
+                else "curriculum_exact_match" if backend.variant == "fastconformer"
+                else "exact_lexicon_match+logprob_score"
+            ),
+            "decision_threshold": backend_result.get("threshold"),
+            "threshold_param_applied": (backend.variant == "legacy"),
+            "processing_time_ms": round(processing_time_ms, 2),
+            "latency_ms": backend_result["latency_ms"],
+            "score": backend_result.get("score"),
+            "top_k_candidates": backend_result.get("top_k_candidates"),
+            "variant": backend.variant,
+            "model": backend.model_name,
+        }
+        return JSONResponse(response)
 
     except Exception as e:
         logger.error(f"❌ verify_word error: {type(e).__name__}: {e}")
         return JSONResponse(
             status_code=500,
-            content={
-                "result": False,
-                "error": f"Transcription failed: {type(e).__name__}: {e}"
-            }
+            content={"result": False, "error": f"Verification failed: {type(e).__name__}: {e}"},
         )
 
 
@@ -785,108 +701,45 @@ async def transcribe_word(audio: UploadFile = File(...)):
     request_start = time.time()
     logger.info(f"🎤 /transcribe_word called - filename: {audio.filename}")
 
-    model, processor, device = _load_word_model_once()
+    backend = get_backend()
 
-    # Read audio file
     content = await audio.read()
     logger.info(f"📁 Audio file received: {len(content)} bytes")
+    if not content:
+        return JSONResponse(status_code=400, content={"error": "No audio data received", "transcription": None})
 
-    # Check if content is empty
-    if not content or len(content) == 0:
-        logger.error("❌ No audio data received")
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "No audio data received",
-                "transcription": None
-            }
-        )
-
-    # Load audio with robust multi-backend fallback
     try:
         y, sr = load_audio_robust(content, sr=16000)
         logger.info(f"🎵 Audio duration: {len(y)/16000:.2f}s")
     except Exception as e:
         logger.error(f"❌ Audio loading failed: {e}")
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": f"Could not read audio file. {str(e)}",
-                "transcription": None
-            }
-        )
+        return JSONResponse(status_code=400, content={"error": f"Could not read audio file. {e}", "transcription": None})
 
     if len(y) == 0:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Empty audio file",
-                "transcription": None
-            }
-        )
+        return JSONResponse(status_code=400, content={"error": "Empty audio file", "transcription": None})
 
-    # Normalize audio amplitude (same as Streamlit app)
     max_amplitude = max(abs(y))
     if max_amplitude > 0:
         y = y / max_amplitude
 
-    # Perform transcription
-    t0 = time.perf_counter()
     try:
-        # Process audio
-        inputs = processor(
-            y,
-            sampling_rate=16000,
-            return_tensors="pt",
-            padding=True
-        )
-
-        # Move inputs to model device (cached, no repeated parameter access)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        # Perform inference with optimizations (mixed precision on GPU)
-        inference_start = time.perf_counter()
-        if device.type == "cuda":
-            with torch.no_grad(), torch.cuda.amp.autocast():
-                logits = model(inputs["input_values"]).logits
-        else:
-            with torch.no_grad():
-                logits = model(inputs["input_values"]).logits
-
-        inference_time = (time.perf_counter() - inference_start) * 1000
-        logger.debug(f"⚡ Inference: {inference_time:.0f}ms on {device.type.upper()}")
-
-        # Decode predictions
-        predicted_ids = torch.argmax(logits, dim=-1)
-        transcription = processor.batch_decode(predicted_ids)[0]
-        
-        # Calculate confidence score
-        probabilities = torch.softmax(logits, dim=-1)
-        max_probs = torch.max(probabilities, dim=-1).values
-        confidence = torch.mean(max_probs).item() * 100
-        
-        t1 = time.perf_counter()
-        latency_ms = (t1 - t0) * 1000.0
+        backend_result = backend.transcribe(y)
         total_time_ms = (time.time() - request_start) * 1000
 
-        logger.info(f"✅ Transcription: '{transcription.strip()}' | Confidence: {confidence:.1f}% | Latency: {latency_ms:.0f}ms | Total: {total_time_ms:.0f}ms")
-
         return JSONResponse({
-            "transcription": transcription.strip(),
-            "confidence": round(confidence, 2),
-            "latency_ms": round(latency_ms, 2),
+            "transcription": backend_result["transcription"],
+            "confidence": backend_result["confidence"],
+            "latency_ms": backend_result["latency_ms"],
             "total_time_ms": round(total_time_ms, 2),
-            "model": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
+            "model": backend.model_name,
+            "variant": backend.variant,
         })
 
     except Exception as e:
         logger.error(f"❌ transcribe_word error: {type(e).__name__}: {e}")
         return JSONResponse(
             status_code=500,
-            content={
-                "error": f"Transcription failed: {type(e).__name__}: {e}",
-                "transcription": None
-            }
+            content={"error": f"Transcription failed: {type(e).__name__}: {e}", "transcription": None},
         )
 
 # For Hugging Face Spaces, the app is automatically served

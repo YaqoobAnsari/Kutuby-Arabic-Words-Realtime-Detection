@@ -1,0 +1,21 @@
+# Keep the Docker build context small. The Dockerfile COPYs only app.py, core/,
+# data/, requirements.txt — everything else here is excluded from the context.
+words/
+.git/
+.claude/
+.streamlit/
+__pycache__/
+**/__pycache__/
+*.pyc
+tests/
+scripts/
+node_modules/
+.venv*/
+venv*/
+*.md
+*.csv
+setup.sh
+setup.bat
+packages.txt
+requirements-dev.txt
+arabic_word_identifier.py

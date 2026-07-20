@@ -1,0 +1,6 @@
+# Dev-only dependencies for one-time scripts (lexicon build, validation spike, calibration).
+# NOT installed in the production Docker image — keep prod requirements lean.
+#
+# Install with:  pip install -r requirements-dev.txt
+
+datasets>=2.14.0   # HuggingFace datasets, used to stream tarteel-ai/everyayah for the spike
