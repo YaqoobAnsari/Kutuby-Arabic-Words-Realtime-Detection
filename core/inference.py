@@ -43,6 +43,7 @@ DEFAULT_MODEL_VARIANT = "tarteel"
 TARTEEL_MODEL_NAME = "tarteel-ai/whisper-base-ar-quran"
 LEGACY_MODEL_NAME = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
 FASTCONFORMER_MODEL_NAME = "nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0"
+PHONEME_MDD_MODEL_NAME = "facebook/wav2vec2-xlsr-53-espeak-cv-ft"
 
 DEFAULT_LEXICON_PATH = Path(__file__).resolve().parent.parent / "data" / "quranic_lexicon.json"
 DEFAULT_CURRICULUM_PATH = Path(__file__).resolve().parent.parent / "data" / "curriculum_words.json"
@@ -572,30 +573,216 @@ class FastConformerBackend:
         }
 
 
-# --- Singleton accessor -----------------------------------------------------
+# --- Phoneme MDD backend ----------------------------------------------------
 
-_BACKEND: Optional[InferenceBackend] = None
+class PhonemeMDDBackend:
+    """Phoneme recognizer (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`) + phoneme-level
+    Mispronunciation Detection & Diagnosis (MDD) and Goodness-of-Pronunciation (GOP).
 
+    Unlike the ASR backends (which return a pass/fail on a whole-word transcription),
+    this one returns WHICH phonemes were wrong (substitution / insertion / deletion),
+    a 0-100 GOP score, and child-friendly corrective feedback. It compares the
+    recognized phoneme string against the canonical (reference) phonemes for the
+    target word: the closed curriculum's precomputed `canonical_phonemes` when
+    available, else an espeak fallback for off-curriculum words.
 
-def get_backend() -> InferenceBackend:
-    """Return the cached backend singleton, loading it on first call.
-
-    Backend choice is driven by the `MODEL_VARIANT` env var. Both backends
-    eagerly load their model on construction, so the first call here is slow
-    (~10–40s); subsequent calls are O(1).
+    CPU-friendly (~300M params, Wav2Vec2 CTC, Apache-2.0), so it runs on the same
+    Cloud Run service as the ASR backends. The pure MDD/GOP logic lives in
+    core/phoneme_mdd.py; this class is only the acoustic front-end + response glue.
     """
-    global _BACKEND
-    if _BACKEND is None:
-        variant = os.getenv("MODEL_VARIANT", DEFAULT_MODEL_VARIANT).strip().lower()
-        if variant == "tarteel":
-            _BACKEND = TarteelBackend()
-        elif variant == "legacy":
-            _BACKEND = LegacyBackend()
-        elif variant == "fastconformer":
-            _BACKEND = FastConformerBackend()
-        else:
-            raise ValueError(
-                f"Unknown MODEL_VARIANT={variant!r}; expected 'tarteel', 'legacy', or 'fastconformer'"
+
+    variant = "mdd"
+    model_name = PHONEME_MDD_MODEL_NAME
+
+    def __init__(self, curriculum_path: Path = DEFAULT_CURRICULUM_PATH):
+        from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForCTC
+        from core.phoneme_mdd import CanonicalIndex, normalize_phoneme_string
+
+        self._normalize = normalize_phoneme_string
+
+        logger.info("mdd: loading %s", PHONEME_MDD_MODEL_NAME)
+        load_start = time.time()
+        # This 2021 checkpoint ships a Wav2Vec2PhonemeCTCTokenizer whose
+        # from_pretrained is broken in current transformers (returns a bool), and
+        # the plain Wav2Vec2CTCTokenizer concatenates phones ("baqr") instead of
+        # space-separating them. So we load the CTC tokenizer only for its vocab
+        # and do manual CTC greedy decoding in _recognize to get clean, space-
+        # separated phonemes that match build_canonical_phonemes.py.
+        from transformers import Wav2Vec2CTCTokenizer
+        self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(PHONEME_MDD_MODEL_NAME)
+        self.tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(PHONEME_MDD_MODEL_NAME)
+        self._blank_id = self.tokenizer.pad_token_id
+        self._word_delim = self.tokenizer.word_delimiter_token
+        self.model = Wav2Vec2ForCTC.from_pretrained(PHONEME_MDD_MODEL_NAME)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model.to(self.device).eval()
+
+        self.index = CanonicalIndex.load(curriculum_path)
+        logger.info("mdd: ready on %s in %.1fs (%d curriculum words indexed)",
+                    self.device.type, time.time() - load_start, len(self.index))
+
+        self._warmup()
+
+    def _warmup(self) -> None:
+        try:
+            t0 = time.time()
+            self._recognize(np.zeros(16000, dtype=np.float32))
+            logger.info("mdd: warmup complete in %.2fs", time.time() - t0)
+        except Exception as e:
+            logger.warning("mdd: warmup failed (non-fatal): %s", e)
+
+    def _recognize(self, audio: np.ndarray) -> str:
+        """Greedy CTC decode to a normalized, space-separated phoneme string.
+
+        Manual CTC collapse (drop consecutive repeats, then the blank/pad token)
+        so each surviving phoneme becomes its own space-separated token, instead
+        of the tokenizer's concatenated 'baqr'."""
+        inputs = self.feature_extractor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
+        input_values = inputs.input_values.to(self.device)
+        with torch.no_grad():
+            if self.device.type == "cuda":
+                with torch.cuda.amp.autocast():
+                    logits = self.model(input_values).logits
+            else:
+                logits = self.model(input_values).logits
+
+        ids = torch.argmax(logits, dim=-1)[0].tolist()
+        collapsed: list[int] = []
+        prev = None
+        for i in ids:
+            if i != prev:
+                if i != self._blank_id:
+                    collapsed.append(i)
+                prev = i
+        tokens = self.tokenizer.convert_ids_to_tokens(collapsed)
+        phonemes = [t for t in tokens if t and t != self._word_delim]
+        return self._normalize(" ".join(phonemes))
+
+    def transcribe(self, audio: np.ndarray) -> dict:
+        t0 = time.time()
+        phonemes = self._recognize(audio)
+        latency_ms = (time.time() - t0) * 1000
+        logger.info("mdd.transcribe: '%s' latency=%.0fms", phonemes, latency_ms)
+        return {"transcription": phonemes, "confidence": 100.0, "latency_ms": round(latency_ms, 2)}
+
+    def _espeak_canonical(self, word: str) -> str:
+        """Off-curriculum fallback: G2P the target word at runtime. Requires espeak
+        in the image. Returns '' if unavailable so verify can degrade gracefully."""
+        try:
+            from phonemizer import phonemize
+            from phonemizer.separator import Separator
+
+            # phone and word separators must differ; normalize_phoneme_string
+            # strips the "|" word markers afterwards.
+            ph = phonemize(
+                word, language="ar", backend="espeak",
+                separator=Separator(phone=" ", word=" | ", syllable=""),
+                strip=True, preserve_punctuation=False, with_stress=False,
+                language_switch="remove-flags", njobs=1,
             )
-        logger.info("inference: backend ready (variant=%s)", _BACKEND.variant)
-    return _BACKEND
+            return self._normalize(ph if isinstance(ph, str) else " ".join(ph))
+        except Exception as e:
+            logger.warning("mdd: espeak fallback failed for %r: %s", word, e)
+            return ""
+
+    def verify(self, audio: np.ndarray, target_word: str, top_k: int = 1, **kwargs) -> dict:
+        # top_k / **kwargs (fuzzy_match, fuzzy_threshold) accepted for interface
+        # parity with app.py's dispatch but not used: MDD is phoneme-diff based.
+        from core.phoneme_mdd import diagnose, diagnose_word
+
+        t0 = time.time()
+        recognized = self._recognize(audio)
+        latency_ms = (time.time() - t0) * 1000
+
+        result = diagnose_word(recognized, target_word, self.index)
+        if result is None:
+            # not in curriculum: try runtime espeak, else we cannot assess phonemes
+            canon = self._espeak_canonical(target_word)
+            if canon:
+                result = diagnose(recognized, canon)
+                result["target_word"] = target_word.strip()
+
+        if result is None:
+            logger.info("mdd.verify: no canonical for target='%s' (cannot assess)", target_word)
+            return {
+                "result": False,
+                "transcription": recognized,
+                "target_word": target_word.strip(),
+                "score": None,
+                "top_k_candidates": None,
+                "similarity": 0.0,
+                "confidence": 0.0,
+                "threshold": None,
+                "latency_ms": round(latency_ms, 2),
+                "recognized_phonemes": recognized,
+                "canonical_phonemes": None,
+                "gop_score": 0.0,
+                "mdd_errors": [],
+                "feedback": ["Could not assess this word (no reference pronunciation)."],
+            }
+
+        errors = result["errors"]
+        feedback = [e["feedback"] for e in errors] or ["That sounds correct."]
+
+        logger.info(
+            "mdd.verify: target='%s' heard='%s' correct=%s errors=%d gop=%.1f latency=%.0fms",
+            target_word, recognized, result["is_correct"], len(errors),
+            result["gop_score"], latency_ms,
+        )
+        return {
+            "result": result["is_correct"],
+            "transcription": recognized,
+            "target_word": target_word.strip(),
+            "score": None,
+            "top_k_candidates": None,
+            "similarity": result["gop_score"],
+            "confidence": result["gop_score"],
+            "threshold": None,
+            "latency_ms": round(latency_ms, 2),
+            # additive MDD/GOP fields (ignored by legacy clients):
+            "recognized_phonemes": result["recognized_phonemes"],
+            "canonical_phonemes": result["canonical_phonemes"],
+            "gop_score": result["gop_score"],
+            "mdd_errors": errors,
+            "feedback": feedback,
+        }
+
+
+# --- Backend registry -------------------------------------------------------
+
+# Multi-backend cache: one instance per variant, lazily loaded on first request.
+# Replaces the single-backend singleton so a council/cascade can hold more than
+# one model resident. Backward compatible: get_backend() with no argument still
+# returns the MODEL_VARIANT-selected backend.
+_BACKENDS: dict[str, InferenceBackend] = {}
+
+_BUILDERS = {
+    "tarteel": TarteelBackend,
+    "legacy": LegacyBackend,
+    "fastconformer": FastConformerBackend,
+    "mdd": PhonemeMDDBackend,
+}
+
+
+def get_backend(variant: Optional[str] = None) -> InferenceBackend:
+    """Return the cached backend for `variant`, loading it on first request.
+
+    `variant=None` (the default, used by all existing callers) resolves to the
+    `MODEL_VARIANT` env var, preserving the original single-backend behavior.
+    An explicit variant (e.g. "mdd") loads that backend alongside any others.
+    Each backend eagerly loads its model on construction, so the first call for a
+    given variant is slow (~10-40s); subsequent calls are O(1).
+    """
+    if variant is None:
+        variant = os.getenv("MODEL_VARIANT", DEFAULT_MODEL_VARIANT)
+    variant = variant.strip().lower()
+
+    if variant not in _BACKENDS:
+        builder = _BUILDERS.get(variant)
+        if builder is None:
+            raise ValueError(
+                f"Unknown backend variant={variant!r}; expected one of {sorted(_BUILDERS)}"
+            )
+        _BACKENDS[variant] = builder()
+        logger.info("inference: backend ready (variant=%s)", variant)
+    return _BACKENDS[variant]

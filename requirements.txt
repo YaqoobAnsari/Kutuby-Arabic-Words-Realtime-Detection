@@ -26,3 +26,10 @@ rapidfuzz>=3.0.0  # High-performance fuzzy string matching for dynamic word veri
 # NOTE: CPU-only torch/torchaudio are installed in the Dockerfile BEFORE this
 # file (from the pytorch CPU index) so NeMo does not pull the multi-GB CUDA build.
 nemo_toolkit[asr]==2.7.3
+
+# Phoneme MDD backend (MODEL_VARIANT=mdd / cascade). The recognizer runs on
+# transformers (already required above). phonemizer is only used for the
+# off-curriculum espeak fallback in PhonemeMDDBackend; the espeak-ng binary is
+# installed via apt in the Dockerfile. Curriculum words use precomputed canonical
+# phonemes and need neither at runtime.
+phonemizer>=3.0.0

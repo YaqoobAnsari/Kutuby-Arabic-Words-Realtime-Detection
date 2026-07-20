@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
     build-essential \
+    espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CPU-only torch/torchaudio FIRST, from the pytorch CPU index, so that
@@ -38,9 +39,24 @@ ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 RUN python -c "import nemo.collections.asr as nemo_asr; \
     nemo_asr.models.EncDecHybridRNNTCTCBPEModel.from_pretrained('nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0')"
 
+# Pre-download the phoneme MDD recognizer weights (facebook/wav2vec2-xlsr-53-espeak-cv-ft,
+# ~1.2GB, Apache-2.0) so the first MDD request doesn't cold-download. Loaded via the same
+# components the runtime uses (the Wav2Vec2Processor auto-loader is broken for this 2021
+# checkpoint, so we fetch feature-extractor + CTC tokenizer + model directly).
+RUN python -c "from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC; \
+    m='facebook/wav2vec2-xlsr-53-espeak-cv-ft'; \
+    Wav2Vec2FeatureExtractor.from_pretrained(m); \
+    Wav2Vec2CTCTokenizer.from_pretrained(m); \
+    Wav2Vec2ForCTC.from_pretrained(m)"
+
 # Default to the FastConformer fix. Override with MODEL_VARIANT=legacy (58% wav2vec2,
 # cold-downloads once) or MODEL_VARIANT=tarteel (25% Quranic, cold-downloads) for rollback.
 ENV MODEL_VARIANT=fastconformer
+
+# Optional: comma-separated backends to warm-load at startup in addition to
+# MODEL_VARIANT (e.g. "mdd" so the cascade's phoneme model is ready). Empty = only
+# the MODEL_VARIANT backend loads eagerly; others load lazily on first request.
+ENV PRELOAD_VARIANTS=""
 
 # Cloud Run injects PORT; default 8080.
 EXPOSE 8080

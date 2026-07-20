@@ -49,10 +49,21 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Load the configured inference backend (Tarteel by default, legacy via MODEL_VARIANT=legacy)."""
+    """Load the configured inference backend (MODEL_VARIANT), plus any extra
+    backends named in PRELOAD_VARIANTS (e.g. 'mdd' so the cascade is warm)."""
     logger.info("🚀 Application startup initiated")
     backend = get_backend()
-    logger.info(f"✅ Application ready (backend variant={backend.variant})")
+    logger.info(f"✅ Default backend ready (variant={backend.variant})")
+
+    preload = [v.strip().lower() for v in os.getenv("PRELOAD_VARIANTS", "").replace(";", ",").split(",") if v.strip()]
+    for variant in preload:
+        if variant == backend.variant:
+            continue
+        try:
+            get_backend(variant)
+            logger.info(f"✅ Preloaded backend variant={variant}")
+        except Exception as e:
+            logger.error(f"⚠️ Preload failed for variant={variant}: {type(e).__name__}: {e}")
 
 # --------------------------- Audio Loading with Multiple Backends ---------------------------
 
@@ -555,6 +566,119 @@ def health():
             "timestamp": datetime.now().isoformat(),
         }
 
+# --------------------------- Modular routing (council / cascade) ---------------------------
+
+# `council`/`cascade` expand to the recommended order: fast ASR first, phoneme
+# MDD second (for a second opinion + corrective feedback on failure).
+_MODEL_ALIASES = {
+    "council": ["fastconformer", "mdd"],
+    "cascade": ["fastconformer", "mdd"],
+}
+
+_DECISION_BASIS = {
+    "legacy": "fuzzy_string_match+confidence",
+    "fastconformer": "curriculum_exact_match",
+    "tarteel": "exact_lexicon_match+logprob_score",
+    "mdd": "phoneme_mdd_diff",
+}
+
+
+def _parse_models(models: str) -> List[str]:
+    """Parse the optional `models` field into an ordered, de-duplicated variant
+    list. Accepts comma or semicolon separators and the council/cascade aliases."""
+    parts: List[str] = []
+    for tok in (models or "").replace(";", ",").split(","):
+        t = tok.strip().lower()
+        if not t:
+            continue
+        parts.extend(_MODEL_ALIASES.get(t, [t]))
+    seen, out = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def _run_cascade(models: str, y, target_word: str, threshold: float,
+                 fuzzy_match: bool, fuzzy_threshold, request_start: float):
+    """Run one or more backends in order. A stage that passes short-circuits the
+    verdict (lenient OR). If none passes, the MDD stage (if present) supplies the
+    graded score and corrective feedback. The response keeps every field the
+    single-backend path returns and ADDS route/stages/MDD fields (never removes)."""
+    variants = _parse_models(models)
+    if not variants:
+        return JSONResponse(status_code=400,
+                            content={"result": False, "error": f"Unknown or empty models={models!r}"})
+
+    stages, ran = [], []
+    mdd_res = passed = passed_variant = last_res = last_variant = None
+    try:
+        for variant in variants:
+            backend = get_backend(variant)
+            if variant == "legacy":
+                res = backend.verify(y, target_word, fuzzy_match=fuzzy_match, fuzzy_threshold=fuzzy_threshold)
+            else:
+                res = backend.verify(y, target_word)
+            ran.append(variant)
+            last_res, last_variant = res, variant
+            if variant == "mdd":
+                mdd_res = res
+            stages.append({
+                "variant": variant,
+                "result": res.get("result"),
+                "transcription": res.get("transcription"),
+                "confidence": res.get("confidence"),
+                "latency_ms": res.get("latency_ms"),
+            })
+            if res.get("result") is True:
+                passed, passed_variant = res, variant
+                break
+    except Exception as e:
+        logger.error(f"❌ cascade error: {type(e).__name__}: {e}")
+        return JSONResponse(status_code=500,
+                            content={"result": False, "error": f"Cascade failed: {type(e).__name__}: {e}"})
+
+    # Final verdict: the passing stage; else the MDD stage (for feedback); else the last stage.
+    if passed is not None:
+        final, final_variant = passed, passed_variant
+    elif mdd_res is not None:
+        final, final_variant = mdd_res, "mdd"
+    else:
+        final, final_variant = last_res, last_variant
+
+    processing_time_ms = (time.time() - request_start) * 1000
+    model_name = get_backend(final_variant).model_name
+    md = mdd_res or {}
+    response = {
+        # --- same shape as the single-backend path (nothing removed) ---
+        "result": final.get("result"),
+        "transcription": final.get("transcription"),
+        "target_word": final.get("target_word", target_word.strip()),
+        "similarity": final.get("similarity"),
+        "confidence": final.get("confidence"),
+        "threshold": round(threshold * 100, 2),
+        "decision_basis": _DECISION_BASIS.get(final_variant, "unknown"),
+        "decision_threshold": final.get("threshold"),
+        "threshold_param_applied": (final_variant == "legacy"),
+        "processing_time_ms": round(processing_time_ms, 2),
+        "latency_ms": final.get("latency_ms"),
+        "score": final.get("score"),
+        "top_k_candidates": final.get("top_k_candidates"),
+        "variant": final_variant,
+        "model": model_name,
+        # --- additive routing + MDD fields (ignored by legacy clients) ---
+        "route": "->".join(ran),
+        "stages": stages,
+        "recognized_phonemes": md.get("recognized_phonemes"),
+        "canonical_phonemes": md.get("canonical_phonemes"),
+        "gop_score": md.get("gop_score", final.get("gop_score")),
+        "mdd_errors": md.get("mdd_errors"),
+        "feedback": md.get("feedback"),
+    }
+    return JSONResponse(response)
+
+
 # --------------------------- Arabic Word Transcription Endpoint ---------------------------
 
 @app.post("/verify_word", response_class=JSONResponse)
@@ -563,7 +687,8 @@ async def verify_word(
     target_word: str = Form(...),
     threshold: float = Form(0.6),
     fuzzy_match: bool = Form(True),
-    fuzzy_threshold: float = Form(None)
+    fuzzy_threshold: float = Form(None),
+    models: str = Form(None),
 ):
     """
     Verify if audio matches target Arabic word and exceeds confidence threshold.
@@ -628,6 +753,12 @@ async def verify_word(
 
     # Normalize after the silence gate so silence ÷ tiny == garbage doesn't slip past
     y = y / raw_max_amplitude
+
+    # Modular routing: when the client selects one or more models (or a council),
+    # run the cascade and return. When `models` is absent, fall through to the
+    # original single-backend path below UNCHANGED (full backward compatibility).
+    if models is not None:
+        return _run_cascade(models, y, target_word, threshold, fuzzy_match, fuzzy_threshold, request_start)
 
     # Dispatch to the active backend
     try:
